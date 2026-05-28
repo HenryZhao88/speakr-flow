@@ -32,7 +32,7 @@ OPTIONS = {
         "rumps", "pynput", "sounddevice", "_sounddevice_data",
         "numpy", "scipy", "requests",
     ],
-    "includes": ["src", "src.app"],
+    "includes": ["src", "src.app", "src.settings_window"],
 }
 
 setup(
