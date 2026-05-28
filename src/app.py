@@ -157,8 +157,10 @@ class SpeakrFlowApp(rumps.App):
 
         def worker():
             try:
-                wav = self.recorder.stop()
+                wav, skip_reason = self.recorder.stop()
                 if wav is None:
+                    if skip_reason in ("too_short", "silence"):
+                        print(f"[SpeakrFlow] skipped: {skip_reason}")
                     return
                 text = transcribe(
                     wav,
