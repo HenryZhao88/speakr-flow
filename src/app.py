@@ -6,6 +6,7 @@ from pathlib import Path
 import rumps
 import pyperclip
 from dotenv import load_dotenv
+from PyObjCTools import AppHelper
 
 from . import config, history, paste, settings_window
 from .paths import ENV_FILE
@@ -176,7 +177,9 @@ class SpeakrFlowApp(rumps.App):
                     paste.paste_text(text)
                 else:
                     pyperclip.copy(text)
-                self._rebuild_menu()
+                # NSMenu changes from a background thread don't flush reliably.
+                # Bounce the rebuild onto the main run loop so Cocoa sees it.
+                AppHelper.callAfter(self._rebuild_menu)
             except TranscriptionError as e:
                 self._error(str(e))
             except Exception as e:
