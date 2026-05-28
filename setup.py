@@ -1,0 +1,36 @@
+"""Build a native macOS .app bundle.
+
+    pip install py2app
+    python setup.py py2app
+
+The result lands in dist/SpeakrFlow.app — drag it to /Applications.
+"""
+from setuptools import setup
+
+APP = ["run.py"]
+
+OPTIONS = {
+    "argv_emulation": False,
+    "plist": {
+        "CFBundleName": "SpeakrFlow",
+        "CFBundleDisplayName": "SpeakrFlow",
+        "CFBundleIdentifier": "com.speakrflow.app",
+        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": "0.1.0",
+        # LSUIElement hides the dock icon — this is a menu bar app.
+        "LSUIElement": True,
+        "NSMicrophoneUsageDescription":
+            "SpeakrFlow needs the microphone to transcribe your speech.",
+        "NSAppleEventsUsageDescription":
+            "SpeakrFlow uses Accessibility to paste transcriptions at your cursor.",
+    },
+    "packages": ["rumps", "pynput", "sounddevice", "numpy", "scipy", "requests"],
+    "includes": ["src", "src.app", "src.settings_window"],
+}
+
+setup(
+    app=APP,
+    name="SpeakrFlow",
+    options={"py2app": OPTIONS},
+    setup_requires=["py2app"],
+)
