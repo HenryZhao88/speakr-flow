@@ -8,9 +8,11 @@ The result lands in dist/SpeakrFlow.app — drag it to /Applications.
 from setuptools import setup
 
 APP = ["run.py"]
+DATA_FILES = [("assets", ["assets/menubar_icon.png"])]
 
 OPTIONS = {
     "argv_emulation": False,
+    "iconfile": None,
     "plist": {
         "CFBundleName": "SpeakrFlow",
         "CFBundleDisplayName": "SpeakrFlow",
@@ -30,12 +32,13 @@ OPTIONS = {
         "rumps", "pynput", "sounddevice", "_sounddevice_data",
         "numpy", "scipy", "requests",
     ],
-    "includes": ["src", "src.app", "src.settings_window"],
+    "includes": ["src", "src.app"],
 }
 
 setup(
     app=APP,
     name="SpeakrFlow",
+    data_files=DATA_FILES,
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],
 )
