@@ -118,7 +118,12 @@ class SpeakrFlowApp(rumps.App):
         return f"Hold {_pretty_key(self.cfg['hotkey'])} to talk"
 
     def _fill_history_submenu(self):
-        self.history_menu.clear()
+        # .clear() blows up on a submenu that's never had children, because
+        # rumps hasn't lazily created its NSMenu yet. Guard it.
+        try:
+            self.history_menu.clear()
+        except AttributeError:
+            pass
         entries = history.load()
         if not entries:
             empty = rumps.MenuItem("(no transcriptions yet)")
