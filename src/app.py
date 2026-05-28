@@ -198,7 +198,23 @@ class SpeakrFlowApp(rumps.App):
             pass
 
 
+def _hide_dock_icon():
+    """Make this a menu-bar-only app at runtime.
+
+    The py2app bundle uses LSUIElement, but `python run.py` launches under
+    the Python framework binary, which shows a rocket in the Dock. Switching
+    the activation policy to Accessory hides it for source runs too.
+    """
+    try:
+        from AppKit import NSApplication  # type: ignore[import-not-found]
+        # NSApplicationActivationPolicyAccessory = 1
+        NSApplication.sharedApplication().setActivationPolicy_(1)
+    except Exception:
+        pass
+
+
 def main():
+    _hide_dock_icon()
     SpeakrFlowApp().run()
 
 

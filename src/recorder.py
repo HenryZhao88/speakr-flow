@@ -55,6 +55,7 @@ class Recorder:
 
         # RMS on int16 samples — promote to float to avoid overflow.
         rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+        print(f"[SpeakrFlow] captured {duration:.2f}s, rms={rms:.1f}")
         if rms < MIN_RMS:
             return None, "silence"
 
