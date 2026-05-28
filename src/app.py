@@ -17,11 +17,12 @@ from .hotkey import HoldHotkey
 load_dotenv(ENV_FILE)
 
 
-def _icon_path():
+def _resolve_asset(filename):
+    """Find an asset whether running from source or inside the py2app bundle."""
     here = Path(__file__).resolve().parent.parent
     candidates = [
-        here / "assets" / "menubar_icon.png",
-        Path(sys.executable).resolve().parent.parent / "Resources" / "assets" / "menubar_icon.png",
+        here / "assets" / filename,
+        Path(sys.executable).resolve().parent.parent / "Resources" / "assets" / filename,
     ]
     for c in candidates:
         if c.exists():
@@ -34,11 +35,14 @@ PROVIDERS = ["groq", "openai"]
 
 class SpeakrFlowApp(rumps.App):
     def __init__(self):
+        self.icon_idle = _resolve_asset("menubar_icon.png")
+        self.icon_recording = _resolve_asset("menubar_icon_recording.png")
+
         super().__init__(
             "SpeakrFlow",
-            icon=_icon_path(),
+            icon=self.icon_idle,
             template=True,
-            quit_button=None,  # we add our own at the bottom
+            quit_button=None,  # type: ignore[arg-type]  # rumps stubs say str but None is valid
         )
         self.cfg = config.load()
         self.recorder = Recorder()
@@ -48,60 +52,57 @@ class SpeakrFlowApp(rumps.App):
         self._build_menu()
         self._start_hotkey()
 
+    # ---------- icon state ----------
+
+    def _set_recording_icon(self, recording):
+        if recording and self.icon_recording:
+            self.icon = self.icon_recording
+            self.template = False  # render the actual red, don't auto-tint
+        else:
+            self.icon = self.icon_idle
+            self.template = True
+
     # ---------- menu ----------
 
     def _build_menu(self):
+        # rumps.App auto-creates self.menu as a Menu object; we only ever call
+        # .add() on it, never reassign — keeps type checkers from getting confused.
         self.provider_menu = rumps.MenuItem("Provider")
         for p in PROVIDERS:
             item = rumps.MenuItem(p.capitalize(), callback=self._make_provider_cb(p))
             item.state = 1 if self.cfg["provider"] == p else 0
             self.provider_menu.add(item)
 
-        self.menu = [
-            self.provider_menu,
-            None,
-            # history items get injected here
-        ]
-        self._render_history_items()
+        self.menu.add(self.provider_menu)
+        self.menu.add(rumps.separator)
+        self._add_history_items()
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("Settings…", callback=self.open_settings))
         self.menu.add(rumps.MenuItem("Quit SpeakrFlow", callback=rumps.quit_application))
 
-    def _render_history_items(self):
-        """Replace the inline history items (positions between Provider and Settings)."""
-        # Wipe everything below the first separator and rebuild the bottom.
-        keys = list(self.menu.keys())
-        # Keep "Provider" + the separator after it; drop the rest.
-        keep = {"Provider"}
-        for k in keys:
-            if k in keep:
-                continue
-            try:
-                del self.menu[k]
-            except KeyError:
-                pass
-
-        # Re-add the separator after Provider
-        self.menu.add(rumps.separator)
-
+    def _add_history_items(self):
+        """Append history items in their current spot in the menu."""
         entries = history.load()
         if not entries:
             empty = rumps.MenuItem("(no transcriptions yet)")
             empty.set_callback(None)
             self.menu.add(empty)
-        else:
-            for entry in entries[:5]:
-                preview = entry["text"].replace("\n", " ")
-                if len(preview) > 60:
-                    preview = preview[:57] + "…"
-                self.menu.add(rumps.MenuItem(
-                    preview,
-                    callback=lambda _, t=entry["text"]: self._copy(t),
-                ))
+            return
+        for entry in entries[:5]:
+            preview = entry["text"].replace("\n", " ")
+            if len(preview) > 60:
+                preview = preview[:57] + "…"
+            self.menu.add(rumps.MenuItem(
+                preview,
+                callback=lambda _, t=entry["text"]: self._copy(t),
+            ))
 
-        self.menu.add(rumps.separator)
-        self.menu.add(rumps.MenuItem("Settings…", callback=self.open_settings))
-        self.menu.add(rumps.MenuItem("Quit SpeakrFlow", callback=rumps.quit_application))
+    def _rebuild_menu(self):
+        """Wipe and re-add — simplest way to refresh history without
+        worrying about which keys to delete."""
+        for key in list(self.menu.keys()):
+            del self.menu[key]
+        self._build_menu()
 
     def _copy(self, text):
         pyperclip.copy(text)
@@ -115,7 +116,7 @@ class SpeakrFlowApp(rumps.App):
                 item.state = 1 if item.title.lower() == name else 0
         return cb
 
-    # ---------- settings window ----------
+    # ---------- settings ----------
 
     def open_settings(self, _):
         settings_window.open_settings(on_save=self._on_settings_saved)
@@ -123,8 +124,7 @@ class SpeakrFlowApp(rumps.App):
     def _on_settings_saved(self, new_cfg):
         self.cfg = new_cfg
         self._start_hotkey()
-        # history limit might have shrunk
-        self._render_history_items()
+        self._rebuild_menu()
 
     # ---------- recording ----------
 
@@ -143,6 +143,7 @@ class SpeakrFlowApp(rumps.App):
             return
         try:
             self.recorder.start()
+            self._set_recording_icon(True)
         except Exception as e:
             self._error(f"Mic failed: {e}")
 
@@ -150,6 +151,9 @@ class SpeakrFlowApp(rumps.App):
         if self.busy:
             return
         self.busy = True
+        # Drop back to the idle icon as soon as the key is released — the
+        # network call shouldn't keep the red mic showing.
+        self._set_recording_icon(False)
 
         def worker():
             try:
@@ -170,7 +174,7 @@ class SpeakrFlowApp(rumps.App):
                     paste.paste_text(text)
                 else:
                     pyperclip.copy(text)
-                self._render_history_items()
+                self._rebuild_menu()
             except TranscriptionError as e:
                 self._error(str(e))
             except Exception as e:

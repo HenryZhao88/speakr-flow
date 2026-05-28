@@ -8,7 +8,10 @@ The result lands in dist/SpeakrFlow.app — drag it to /Applications.
 from setuptools import setup
 
 APP = ["run.py"]
-DATA_FILES = [("assets", ["assets/menubar_icon.png"])]
+DATA_FILES = [("assets", [
+    "assets/menubar_icon.png",
+    "assets/menubar_icon_recording.png",
+])]
 
 OPTIONS = {
     "argv_emulation": False,
