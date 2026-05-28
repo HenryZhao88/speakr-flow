@@ -24,7 +24,12 @@ OPTIONS = {
         "NSAppleEventsUsageDescription":
             "SpeakrFlow uses Accessibility to paste transcriptions at your cursor.",
     },
-    "packages": ["rumps", "pynput", "sounddevice", "numpy", "scipy", "requests"],
+    # _sounddevice_data MUST be a "package" (not zipped) so its bundled
+    # libportaudio.dylib stays as a real file dlopen() can load.
+    "packages": [
+        "rumps", "pynput", "sounddevice", "_sounddevice_data",
+        "numpy", "scipy", "requests",
+    ],
     "includes": ["src", "src.app", "src.settings_window"],
 }
 
