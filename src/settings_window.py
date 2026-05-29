@@ -12,6 +12,10 @@ from AppKit import (
     NSTextField,
     NSPopUpButton,
     NSButton,
+    NSScrollView,
+    NSView,
+    NSColor,
+    NSFont,
     NSApp,
     NSFloatingWindowLevel,
 )
@@ -25,15 +29,26 @@ _open_controller = None
 
 NSSwitchButton = 3      # NSButtonType
 NSBezelRounded = 1      # NSBezelStyle
+NSBezelBorder = 2       # NSBorderType (for the history scroll view)
+
+
+class _FlippedView(NSView):
+    """Document view whose origin is top-left, so we can lay history rows
+    out top-down with simple increasing y values."""
+
+    def isFlipped(self):
+        return True
 
 
 class SettingsController(NSObject):
-    def initWithOnSave_(self, on_save):
+    def initWithOnSave_onHistoryChange_(self, on_save, on_history_change):
         self = objc.super(SettingsController, self).init()
         if self is None:
             return None
         self.cfg = config.load()
         self.on_save = on_save
+        self.on_history_change = on_history_change
+        self.history_rows = []
         self._build_window()
         return self
 
@@ -87,7 +102,7 @@ class SettingsController(NSObject):
 
     @objc.python_method
     def _build_window(self):
-        W, H = 480, 420
+        W, H = 540, 620
         style = (
             NSWindowStyleMaskTitled
             | NSWindowStyleMaskClosable
@@ -145,12 +160,35 @@ class SettingsController(NSObject):
         )
         cv.addSubview_(self.sounds)
 
-        y -= 50
+        # ---- History section: editable list of past transcriptions ----
+        y -= 34
+        cv.addSubview_(self._label("History", 24, y, w=200))
+
+        # Scroll view spans from just below the bottom button rows up to the
+        # History label. Bottom rows are pinned: Cancel/Save at y=18,
+        # Clear History / Reload .env at y=56.
+        scroll_y, scroll_top = 94, y - 6
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(24, scroll_y, W - 48, scroll_top - scroll_y),
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(NSBezelBorder)
+        scroll.setAutohidesScrollers_(True)
+        self.history_scroll = scroll
+
+        doc_w = scroll.contentSize().width
+        self.history_doc = _FlippedView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, doc_w, scroll.contentSize().height),
+        )
+        scroll.setDocumentView_(self.history_doc)
+        cv.addSubview_(scroll)
+        self._populate_history()
+
         cv.addSubview_(self._button(
-            "Clear History", 24, y, action="clearHistory:",
+            "Clear History", 24, 56, action="clearHistory:",
         ))
         cv.addSubview_(self._button(
-            "Reload .env", 160, y, action="reloadEnv:",
+            "Reload .env", 160, 56, action="reloadEnv:",
         ))
 
         # Bottom row: Cancel / Save
@@ -158,6 +196,79 @@ class SettingsController(NSObject):
         cv.addSubview_(self._button("Save", W - 130, 18, action="save:", default=True))
 
         self.window.center()
+
+    # ---------- history list ----------
+
+    @objc.python_method
+    def _populate_history(self):
+        """(Re)build the rows inside the history scroll view from disk."""
+        doc = self.history_doc
+        for sub in list(doc.subviews()):
+            sub.removeFromSuperview()
+        self.history_rows = []
+
+        entries = history.load()
+        row_h = 72
+        width = self.history_scroll.contentSize().width
+        visible_h = self.history_scroll.contentSize().height
+        total_h = max(len(entries) * row_h, visible_h)
+        doc.setFrame_(NSMakeRect(0, 0, width, total_h))
+
+        if not entries:
+            empty = self._label("(no transcriptions yet)", 8, 8, w=width - 16)
+            empty.setTextColor_(NSColor.secondaryLabelColor())
+            doc.addSubview_(empty)
+            return
+
+        for i, entry in enumerate(entries):
+            y = i * row_h
+            time_lbl = self._label(entry.get("time", ""), 6, y + 6, w=width - 16)
+            time_lbl.setFont_(NSFont.systemFontOfSize_(10))
+            time_lbl.setTextColor_(NSColor.secondaryLabelColor())
+            doc.addSubview_(time_lbl)
+
+            field = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(6, y + 24, width - 96, 40),
+            )
+            field.setStringValue_(entry.get("text", ""))
+            field.setUsesSingleLineMode_(False)
+            field.cell().setWraps_(True)
+            doc.addSubview_(field)
+
+            btn = NSButton.alloc().initWithFrame_(
+                NSMakeRect(width - 84, y + 30, 78, 26),
+            )
+            btn.setTitle_("Delete")
+            btn.setBezelStyle_(NSBezelRounded)
+            btn.setTarget_(self)
+            btn.setAction_("deleteEntry:")
+            btn.setTag_(i)
+            doc.addSubview_(btn)
+
+            self.history_rows.append((field, i))
+
+    @objc.python_method
+    def _save_history_edits(self):
+        """Write any edited text in the visible rows back to disk."""
+        entries = history.load()
+        changed = False
+        for field, idx in self.history_rows:
+            if 0 <= idx < len(entries):
+                new_text = str(field.stringValue())
+                if entries[idx].get("text") != new_text:
+                    entries[idx]["text"] = new_text
+                    changed = True
+        if changed:
+            history.save(entries)
+        return changed
+
+    @objc.python_method
+    def _notify_history_changed(self):
+        if self.on_history_change:
+            try:
+                self.on_history_change()
+            except Exception as e:
+                print(f"on_history_change callback failed: {e}")
 
     # ---------- actions ----------
 
@@ -179,6 +290,7 @@ class SettingsController(NSObject):
         new_cfg["auto_paste"] = bool(self.autopaste.state())
         new_cfg["play_sounds"] = bool(self.sounds.state())
 
+        self._save_history_edits()
         config.save(new_cfg)
         if self.on_save:
             try:
@@ -192,6 +304,15 @@ class SettingsController(NSObject):
 
     def clearHistory_(self, sender):
         history.clear()
+        self._populate_history()
+        self._notify_history_changed()
+
+    def deleteEntry_(self, sender):
+        # Persist any pending edits first so reindexing doesn't drop them.
+        self._save_history_edits()
+        history.delete(sender.tag())
+        self._populate_history()
+        self._notify_history_changed()
 
     def reloadEnv_(self, sender):
         from dotenv import load_dotenv
@@ -204,11 +325,13 @@ class SettingsController(NSObject):
         _open_controller = None
 
 
-def open_settings(on_save):
+def open_settings(on_save, on_history_change=None):
     """Open (or focus) the settings window."""
     global _open_controller
     if _open_controller is not None:
         _open_controller.show()
         return
-    _open_controller = SettingsController.alloc().initWithOnSave_(on_save)
+    _open_controller = SettingsController.alloc().initWithOnSave_onHistoryChange_(
+        on_save, on_history_change,
+    )
     _open_controller.show()

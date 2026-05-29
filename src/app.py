@@ -120,7 +120,10 @@ class SpeakrFlowApp(rumps.App):
     # ---------- settings ----------
 
     def open_settings(self, _):
-        settings_window.open_settings(on_save=self._on_settings_saved)
+        settings_window.open_settings(
+            on_save=self._on_settings_saved,
+            on_history_change=self._rebuild_menu,
+        )
 
     def _on_settings_saved(self, new_cfg):
         self.cfg = new_cfg
