@@ -114,6 +114,7 @@ class SettingsController(NSObject):
         self.window.setTitle_("SpeakrFlow Settings")
         self.window.setLevel_(NSFloatingWindowLevel)
         self.window.setReleasedWhenClosed_(False)
+        self.window.setDelegate_(self)
         cv = self.window.contentView()
 
         # Layout top-down. AppKit origin is bottom-left, so we count down from H.
@@ -322,6 +323,10 @@ class SettingsController(NSObject):
     def _close(self):
         global _open_controller
         self.window.close()
+        _open_controller = None
+
+    def windowWillClose_(self, notification):
+        global _open_controller
         _open_controller = None
 
 

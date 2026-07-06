@@ -49,6 +49,9 @@ class HoldHotkey:
                 print(f"hotkey release handler error: {e}")
 
     def start(self):
+        if self.listener and self.listener.is_alive():
+            return
+        self.is_down = False
         self.listener = keyboard.Listener(
             on_press=self._handle_press,
             on_release=self._handle_release,
@@ -58,4 +61,12 @@ class HoldHotkey:
     def stop(self):
         if self.listener:
             self.listener.stop()
+            try:
+                self.listener.join(1)
+            except RuntimeError:
+                pass
             self.listener = None
+        self.is_down = False
+
+    def is_alive(self):
+        return bool(self.listener and self.listener.is_alive())

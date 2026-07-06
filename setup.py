@@ -33,9 +33,12 @@ OPTIONS = {
     # libportaudio.dylib stays as a real file dlopen() can load.
     "packages": [
         "rumps", "pynput", "sounddevice", "_sounddevice_data",
-        "numpy", "scipy", "requests",
+        "numpy", "scipy", "requests", "pyperclip", "dotenv",
     ],
-    "includes": ["src", "src.app", "src.settings_window"],
+    "includes": [
+        "src", "src.app", "src.settings_window",
+        "AppKit", "Foundation", "PyObjCTools", "Quartz", "objc",
+    ],
 }
 
 setup(

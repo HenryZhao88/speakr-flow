@@ -1,4 +1,6 @@
 import json
+import os
+import threading
 from .paths import CONFIG_FILE
 
 DEFAULTS = {
@@ -12,19 +14,69 @@ DEFAULTS = {
     "history_limit": 50,
 }
 
+_LOCK = threading.RLock()
+VALID_PROVIDERS = {"groq", "openai"}
+DEFAULT_MODELS = {
+    "groq": DEFAULTS["model"],
+    "openai": "whisper-1",
+}
+
+
+def normalize(data):
+    if not isinstance(data, dict):
+        data = {}
+    cfg = dict(DEFAULTS)
+    cfg.update(data)
+
+    if cfg.get("provider") not in VALID_PROVIDERS:
+        cfg["provider"] = DEFAULTS["provider"]
+
+    model = str(cfg.get("model", "")).strip()
+    other_provider_defaults = {
+        default_model
+        for provider, default_model in DEFAULT_MODELS.items()
+        if provider != cfg["provider"]
+    }
+    if not model or model in other_provider_defaults:
+        model = DEFAULT_MODELS[cfg["provider"]]
+    cfg["model"] = model
+
+    cfg["hotkey"] = str(cfg.get("hotkey") or DEFAULTS["hotkey"])
+    cfg["language"] = str(cfg.get("language") or "").strip()
+    cfg["prompt"] = str(cfg.get("prompt") or "").strip()
+    cfg["auto_paste"] = bool(cfg.get("auto_paste"))
+    cfg["play_sounds"] = bool(cfg.get("play_sounds"))
+    try:
+        cfg["history_limit"] = max(1, int(cfg.get("history_limit", 50)))
+    except (TypeError, ValueError):
+        cfg["history_limit"] = DEFAULTS["history_limit"]
+
+    return cfg
+
 
 def load():
-    if not CONFIG_FILE.exists():
-        save(DEFAULTS)
-        return dict(DEFAULTS)
-    with open(CONFIG_FILE) as f:
-        data = json.load(f)
-    # Backfill any new keys added between versions
-    for k, v in DEFAULTS.items():
-        data.setdefault(k, v)
-    return data
+    with _LOCK:
+        if not CONFIG_FILE.exists():
+            save(DEFAULTS)
+            return dict(DEFAULTS)
+        try:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError, TypeError):
+            data = {}
+        cfg = normalize(data)
+        if cfg != data:
+            save(cfg)
+        return cfg
 
 
 def save(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2)
+    with _LOCK:
+        normalized = normalize(cfg)
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CONFIG_FILE.with_suffix(CONFIG_FILE.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(normalized, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, CONFIG_FILE)
+        return normalized

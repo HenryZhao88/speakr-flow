@@ -49,9 +49,13 @@ class SpeakrFlowApp(rumps.App):
         self.recorder = Recorder()
         self.hotkey = None
         self.busy = False
+        self.recording = False
+        self._state_lock = threading.RLock()
 
         self._build_menu()
         self._start_hotkey()
+        self.hotkey_watchdog = rumps.Timer(self._check_hotkey, 30)
+        self.hotkey_watchdog.start()
 
     # ---------- icon state ----------
 
@@ -62,6 +66,9 @@ class SpeakrFlowApp(rumps.App):
         else:
             self.icon = self.icon_idle
             self.template = True
+
+    def _set_recording_icon_later(self, recording):
+        AppHelper.callAfter(self._set_recording_icon, recording)
 
     # ---------- menu ----------
 
@@ -77,6 +84,9 @@ class SpeakrFlowApp(rumps.App):
         self.menu.add(self.provider_menu)
         self.menu.add(rumps.separator)
         self._add_history_items()
+        self.menu.add(rumps.separator)
+        self.menu.add(rumps.MenuItem("Clear History", callback=self.clear_history))
+        self.menu.add(rumps.MenuItem("Reload .env", callback=self.reload_env))
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("Settings…", callback=self.open_settings))
         self.menu.add(rumps.MenuItem("Quit SpeakrFlow", callback=rumps.quit_application))
@@ -112,10 +122,18 @@ class SpeakrFlowApp(rumps.App):
     def _make_provider_cb(self, name):
         def cb(_):
             self.cfg["provider"] = name
-            config.save(self.cfg)
+            self.cfg = config.save(self.cfg)
             for item in self.provider_menu.values():
                 item.state = 1 if item.title.lower() == name else 0
         return cb
+
+    def clear_history(self, _):
+        history.clear()
+        self._rebuild_menu()
+
+    def reload_env(self, _):
+        load_dotenv(ENV_FILE, override=True)
+        rumps.notification("SpeakrFlow", "Reloaded .env", str(ENV_FILE))
 
     # ---------- settings ----------
 
@@ -126,7 +144,7 @@ class SpeakrFlowApp(rumps.App):
         )
 
     def _on_settings_saved(self, new_cfg):
-        self.cfg = new_cfg
+        self.cfg = config.normalize(new_cfg)
         self._start_hotkey()
         self._rebuild_menu()
 
@@ -142,59 +160,85 @@ class SpeakrFlowApp(rumps.App):
         )
         self.hotkey.start()
 
+    def _check_hotkey(self, _):
+        with self._state_lock:
+            if self.recording:
+                return
+            hotkey = self.hotkey
+        if not hotkey or not hotkey.is_alive():
+            print("[SpeakrFlow] hotkey listener stopped; restarting")
+            self._start_hotkey()
+
     def _on_hotkey_down(self):
-        if self.busy:
-            return
+        with self._state_lock:
+            if self.busy or self.recording:
+                return
+            self.recording = True
+        self._set_recording_icon_later(True)
         try:
             self.recorder.start()
-            self._set_recording_icon(True)
+            print("[SpeakrFlow] recording started")
         except Exception as e:
+            with self._state_lock:
+                self.recording = False
+            self._set_recording_icon_later(False)
             self._error(f"Mic failed: {e}")
 
     def _on_hotkey_up(self):
-        if self.busy:
-            return
-        self.busy = True
-        # Drop back to the idle icon as soon as the key is released — the
-        # network call shouldn't keep the red mic showing.
-        self._set_recording_icon(False)
+        with self._state_lock:
+            if self.busy or not self.recording:
+                return
+            self.recording = False
+            self.busy = True
+            cfg = dict(self.cfg)
+        # Drop back to the idle icon as soon as the key is released; the
+        # network call should not keep the red mic showing.
+        self._set_recording_icon_later(False)
 
         def worker():
             try:
                 wav, skip_reason = self.recorder.stop()
                 if wav is None:
-                    if skip_reason in ("too_short", "silence"):
-                        print(f"[SpeakrFlow] skipped: {skip_reason}")
+                    print(f"[SpeakrFlow] skipped: {skip_reason}")
                     return
                 text = transcribe(
                     wav,
-                    provider=self.cfg["provider"],
-                    model=self.cfg["model"],
-                    language=self.cfg["language"],
-                    prompt=self.cfg["prompt"],
+                    provider=cfg["provider"],
+                    model=cfg["model"],
+                    language=cfg["language"],
+                    prompt=cfg["prompt"],
                 )
                 if not text:
+                    print("[SpeakrFlow] skipped: empty transcript")
                     return
-                history.add(text, limit=self.cfg["history_limit"])
-                if self.cfg["auto_paste"]:
-                    paste.paste_text(text)
-                else:
-                    pyperclip.copy(text)
+                history.add(text, limit=cfg["history_limit"])
                 # NSMenu changes from a background thread don't flush reliably.
                 # Bounce the rebuild onto the main run loop so Cocoa sees it.
                 AppHelper.callAfter(self._rebuild_menu)
+                if cfg["auto_paste"]:
+                    try:
+                        paste.paste_text(text)
+                    except Exception as e:
+                        pyperclip.copy(text)
+                        self._error(f"Paste failed; copied to clipboard instead: {e}")
+                else:
+                    pyperclip.copy(text)
             except TranscriptionError as e:
                 self._error(str(e))
             except Exception as e:
                 traceback.print_exc()
                 self._error(f"Unexpected: {e}")
             finally:
-                self.busy = False
+                with self._state_lock:
+                    self.busy = False
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _error(self, msg):
         print(f"[SpeakrFlow] {msg}")
+        AppHelper.callAfter(self._notify_error, msg)
+
+    def _notify_error(self, msg):
         try:
             rumps.notification("SpeakrFlow", "Error", msg)
         except Exception:
