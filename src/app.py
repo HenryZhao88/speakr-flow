@@ -1,14 +1,22 @@
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
+import objc
 import rumps
 import pyperclip
 from dotenv import load_dotenv
+from AppKit import NSWorkspace, NSWorkspaceDidWakeNotification
+from Foundation import (
+    NSObject,
+    NSProcessInfo,
+    NSActivityUserInitiatedAllowingIdleSystemSleep,
+)
 from PyObjCTools import AppHelper
 
-from . import config, history, paste, settings_window
+from . import config, history, paste, settings_window, status
 from .paths import ENV_FILE
 from .recorder import Recorder
 from .transcriber import transcribe, TranscriptionError
@@ -34,6 +42,20 @@ def _resolve_asset(filename):
 PROVIDERS = ["groq", "openai"]
 
 
+class _WakeObserver(NSObject):
+    """Bridges NSWorkspaceDidWakeNotification to a plain Python callback."""
+
+    def initWithHandler_(self, handler):
+        self = objc.super(_WakeObserver, self).init()
+        if self is None:
+            return None
+        self._handler = handler
+        return self
+
+    def workspaceDidWake_(self, _notification):
+        self._handler()
+
+
 class SpeakrFlowApp(rumps.App):
     def __init__(self):
         self.icon_idle = _resolve_asset("menubar_icon.png")
@@ -52,10 +74,43 @@ class SpeakrFlowApp(rumps.App):
         self.recording = False
         self._state_lock = threading.RLock()
 
+        self._transcribe_started = None
+        self.status_item = rumps.MenuItem(status.status_line("idle"))
+        self.status_item.set_callback(None)
+        self.last_item = rumps.MenuItem("Last: —")
+        self.last_item.set_callback(None)
+        self._status_timer = rumps.Timer(self._tick_transcribing, 1)
+
         self._build_menu()
         self._start_hotkey()
         self.hotkey_watchdog = rumps.Timer(self._check_hotkey, 30)
         self.hotkey_watchdog.start()
+
+        self._activity_token = None
+        self._prevent_app_nap()
+        self._wake_observer = _WakeObserver.alloc().initWithHandler_(self._on_wake)
+        NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+            self._wake_observer,
+            "workspaceDidWake:",
+            NSWorkspaceDidWakeNotification,
+            None,
+        )
+
+    def _prevent_app_nap(self):
+        """App Nap can throttle us enough that macOS kills the event tap."""
+        try:
+            self._activity_token = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+                NSActivityUserInitiatedAllowingIdleSystemSleep,
+                "SpeakrFlow listens for a global hotkey",
+            )
+        except Exception as e:
+            print(f"[SpeakrFlow] could not disable App Nap: {e}")
+
+    def _on_wake(self):
+        # The old event tap may have been disabled during sleep; a fresh
+        # listener is cheap and guaranteed to work.
+        print("[SpeakrFlow] system woke from sleep; restarting hotkey listener")
+        self._start_hotkey()
 
     # ---------- icon state ----------
 
@@ -67,14 +122,42 @@ class SpeakrFlowApp(rumps.App):
             self.icon = self.icon_idle
             self.template = True
 
-    def _set_recording_icon_later(self, recording):
-        AppHelper.callAfter(self._set_recording_icon, recording)
+    # ---------- status ----------
+
+    def _set_state(self, state):
+        """Main-thread only: sync icon, menu bar title, and status menu item."""
+        self.status_item.title = status.status_line(state)
+        self._set_recording_icon(state == "recording")
+        if state == "transcribing":
+            self._transcribe_started = time.monotonic()
+            self.title = status.transcribing_title(0)
+            self._status_timer.start()
+        else:
+            self._status_timer.stop()
+            self._transcribe_started = None
+            self.title = None
+
+    def _set_state_later(self, state):
+        AppHelper.callAfter(self._set_state, state)
+
+    def _tick_transcribing(self, _):
+        if self._transcribe_started is not None:
+            elapsed = time.monotonic() - self._transcribe_started
+            self.title = status.transcribing_title(elapsed)
+
+    def _finish_attempt(self, ok, detail):
+        self.last_item.title = status.last_line(ok, detail, time.time())
+        self._set_state("idle")
 
     # ---------- menu ----------
 
     def _build_menu(self):
         # rumps.App auto-creates self.menu as a Menu object; we only ever call
         # .add() on it, never reassign — keeps type checkers from getting confused.
+        self.menu.add(self.status_item)
+        self.menu.add(self.last_item)
+        self.menu.add(rumps.separator)
+
         self.provider_menu = rumps.MenuItem("Provider")
         for p in PROVIDERS:
             item = rumps.MenuItem(p.capitalize(), callback=self._make_provider_cb(p))
@@ -174,14 +257,14 @@ class SpeakrFlowApp(rumps.App):
             if self.busy or self.recording:
                 return
             self.recording = True
-        self._set_recording_icon_later(True)
+        self._set_state_later("recording")
         try:
             self.recorder.start()
             print("[SpeakrFlow] recording started")
         except Exception as e:
             with self._state_lock:
                 self.recording = False
-            self._set_recording_icon_later(False)
+            self._set_state_later("idle")
             self._error(f"Mic failed: {e}")
 
     def _on_hotkey_up(self):
@@ -191,15 +274,19 @@ class SpeakrFlowApp(rumps.App):
             self.recording = False
             self.busy = True
             cfg = dict(self.cfg)
-        # Drop back to the idle icon as soon as the key is released; the
-        # network call should not keep the red mic showing.
-        self._set_recording_icon_later(False)
+        # The red mic drops as soon as the key is released; the menu bar shows
+        # "…" with elapsed seconds while the network call is in flight so a
+        # slow API is visibly still alive rather than frozen.
+        self._set_state_later("transcribing")
 
         def worker():
+            ok = False
+            detail = ""
             try:
                 wav, skip_reason = self.recorder.stop()
                 if wav is None:
                     print(f"[SpeakrFlow] skipped: {skip_reason}")
+                    detail = f"skipped: {skip_reason}"
                     return
                 text = transcribe(
                     wav,
@@ -210,7 +297,10 @@ class SpeakrFlowApp(rumps.App):
                 )
                 if not text:
                     print("[SpeakrFlow] skipped: empty transcript")
+                    detail = "skipped: empty transcript"
                     return
+                ok = True
+                detail = text
                 history.add(text, limit=cfg["history_limit"])
                 # NSMenu changes from a background thread don't flush reliably.
                 # Bounce the rebuild onto the main run loop so Cocoa sees it.
@@ -224,13 +314,16 @@ class SpeakrFlowApp(rumps.App):
                 else:
                     pyperclip.copy(text)
             except TranscriptionError as e:
-                self._error(str(e))
+                detail = str(e)
+                self._error(detail)
             except Exception as e:
                 traceback.print_exc()
-                self._error(f"Unexpected: {e}")
+                detail = f"Unexpected: {e}"
+                self._error(detail)
             finally:
                 with self._state_lock:
                     self.busy = False
+                AppHelper.callAfter(self._finish_attempt, ok, detail)
 
         threading.Thread(target=worker, daemon=True).start()
 

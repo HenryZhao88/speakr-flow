@@ -106,6 +106,63 @@ class TranscriberTests(unittest.TestCase):
         self.assertEqual(calls, [b"audio", b"audio"])
 
 
+class HotkeyResilienceTests(unittest.TestCase):
+    """macOS disables CGEventTaps after sleep/wake or throttling; the listener
+    must re-enable its tap when the disabled notification arrives."""
+
+    def _make_listener(self):
+        from src import hotkey
+        listener = hotkey.ResilientListener(
+            on_press=lambda *a: None,
+            on_release=lambda *a: None,
+        )
+        listener._tap = object()
+        return hotkey, listener
+
+    def test_reenables_tap_when_disabled_by_timeout(self):
+        hotkey, listener = self._make_listener()
+        with mock.patch.object(hotkey.Quartz, "CGEventTapEnable") as enable:
+            listener._handle_message(
+                None, hotkey.Quartz.kCGEventTapDisabledByTimeout, None, None, False)
+        enable.assert_called_once_with(listener._tap, True)
+
+    def test_reenables_tap_when_disabled_by_user_input(self):
+        hotkey, listener = self._make_listener()
+        with mock.patch.object(hotkey.Quartz, "CGEventTapEnable") as enable:
+            listener._handle_message(
+                None, hotkey.Quartz.kCGEventTapDisabledByUserInput, None, None, False)
+        enable.assert_called_once_with(listener._tap, True)
+
+    def test_normal_events_still_reach_pynput(self):
+        hotkey, listener = self._make_listener()
+        with mock.patch.object(
+            hotkey.keyboard.Listener, "_handle_message"
+        ) as base_handler:
+            listener._handle_message(None, 10, "event", None, False)
+        base_handler.assert_called_once_with(None, 10, "event", None, False)
+
+
+class StatusTests(unittest.TestCase):
+    def test_transcribing_title_counts_seconds(self):
+        from src import status
+        self.assertEqual(status.transcribing_title(0.3), "…")
+        self.assertEqual(status.transcribing_title(3.7), "… 3s")
+
+    def test_status_lines(self):
+        from src import status
+        self.assertEqual(status.status_line("idle"), "Status: Idle")
+        self.assertEqual(status.status_line("recording"), "Status: Recording…")
+        self.assertEqual(status.status_line("transcribing"), "Status: Transcribing…")
+
+    def test_last_line_formats_success_and_error(self):
+        from src import status
+        ok = status.last_line(True, "hello world", 1234.0)
+        self.assertTrue(ok.startswith("Last: ✓"))
+        err = status.last_line(False, "x" * 100, 1234.0)
+        self.assertTrue(err.startswith("Last: ⚠"))
+        self.assertLess(len(err), 90)
+
+
 class RecorderGateTests(unittest.TestCase):
     def test_silence_is_rejected(self):
         audio = np.zeros((16000, 1), dtype=np.int16)

@@ -45,9 +45,17 @@ The first time it runs, macOS will ask you to grant:
 
 If hotkeys silently stop working, it's almost always one of these toggles. System Settings → Privacy & Security.
 
+The app re-enables its key listener automatically when macOS disables it (which happens after sleep/wake or heavy throttling), so the hotkey should survive sleep. If it ever still dies, check the Status line in the menu and the toggles above.
+
 ## Menu bar
 
+The icon shows what the app is doing:
+- **Plain mic** — idle, waiting for the hotkey
+- **Red mic** — recording
+- **"… Ns" next to the icon** — transcription request in flight, counting seconds (so a slow API call is visibly alive, not frozen)
+
 Click the 🎙 icon for:
+- **Status** line (Idle / Recording… / Transcribing…) and the result of the last attempt (✓/⚠ with time and details)
 - Recent transcriptions (click any to copy)
 - Clear history
 - **Open Settings…** — provider, model, hotkey, language, prompt, auto-paste, etc.

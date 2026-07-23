@@ -1,3 +1,4 @@
+import Quartz
 from pynput import keyboard
 
 # Map friendly names from the settings UI to pynput Key values.
@@ -19,6 +20,36 @@ KEY_MAP = {
 
 def available_keys():
     return list(KEY_MAP.keys())
+
+
+class ResilientListener(keyboard.Listener):
+    """keyboard.Listener that survives macOS disabling its event tap.
+
+    After system sleep/wake (or when the process is throttled and stops
+    servicing events quickly enough), macOS disables the CGEventTap and posts
+    kCGEventTapDisabledByTimeout to the callback. pynput ignores that event,
+    so its listener thread stays alive but never receives another keystroke —
+    which also means thread-liveness watchdogs can't detect the failure.
+    Re-enabling the tap when the notification arrives keeps the hotkey working.
+    """
+
+    _DISABLED_EVENTS = (
+        Quartz.kCGEventTapDisabledByTimeout,
+        Quartz.kCGEventTapDisabledByUserInput,
+    )
+
+    def _create_event_tap(self):
+        self._tap = super()._create_event_tap()
+        return self._tap
+
+    def _handle_message(self, proxy, event_type, event, refcon, injected):
+        if event_type in self._DISABLED_EVENTS:
+            tap = getattr(self, "_tap", None)
+            if tap is not None:
+                Quartz.CGEventTapEnable(tap, True)
+                print("[SpeakrFlow] event tap was disabled by macOS; re-enabled")
+            return
+        super()._handle_message(proxy, event_type, event, refcon, injected)
 
 
 class HoldHotkey:
@@ -52,7 +83,7 @@ class HoldHotkey:
         if self.listener and self.listener.is_alive():
             return
         self.is_down = False
-        self.listener = keyboard.Listener(
+        self.listener = ResilientListener(
             on_press=self._handle_press,
             on_release=self._handle_release,
         )
