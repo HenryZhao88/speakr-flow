@@ -142,6 +142,29 @@ class HotkeyResilienceTests(unittest.TestCase):
         base_handler.assert_called_once_with(None, 10, "event", None, False)
 
 
+class PasteTests(unittest.TestCase):
+    """CGEventPost silently discards events without Accessibility permission;
+    paste_text must fail loudly instead so the app can notify the user."""
+
+    def test_raises_when_accessibility_not_granted(self):
+        from src import paste
+        with mock.patch.object(paste, "_copy_text"):
+            with mock.patch.object(paste, "_accessibility_trusted", return_value=False):
+                with mock.patch.object(paste, "_paste_with_quartz") as quartz:
+                    with self.assertRaisesRegex(PermissionError, "Accessibility"):
+                        paste.paste_text("hello")
+        quartz.assert_not_called()
+
+    def test_pastes_when_trusted(self):
+        from src import paste
+        with mock.patch.object(paste, "_copy_text") as copy:
+            with mock.patch.object(paste, "_accessibility_trusted", return_value=True):
+                with mock.patch.object(paste, "_paste_with_quartz") as quartz:
+                    paste.paste_text("hello")
+        copy.assert_called_once_with("hello")
+        quartz.assert_called_once()
+
+
 class StatusTests(unittest.TestCase):
     def test_transcribing_title_counts_seconds(self):
         from src import status

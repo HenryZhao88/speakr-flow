@@ -44,9 +44,26 @@ def _paste_with_pynput():
         kb.release("v")
 
 
+def _accessibility_trusted():
+    try:
+        import HIServices  # type: ignore[import-not-found]
+        return bool(HIServices.AXIsProcessTrusted())
+    except Exception:
+        # Can't tell — assume yes rather than block pasting.
+        return True
+
+
 def paste_text(text):
     """Drop text on the clipboard and fire Cmd+V at whatever has focus."""
     _copy_text(text)
+    # CGEventPost (and pynput's Controller) silently discard events when the
+    # app lacks Accessibility permission — fail loudly instead so the caller
+    # can tell the user.
+    if not _accessibility_trusted():
+        raise PermissionError(
+            "Accessibility permission missing. Enable SpeakrFlow in "
+            "System Settings → Privacy & Security → Accessibility."
+        )
     try:
         _paste_with_quartz()
     except Exception:
