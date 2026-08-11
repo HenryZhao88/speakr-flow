@@ -105,6 +105,45 @@ class TranscriberTests(unittest.TestCase):
         self.assertEqual(text, "hello")
         self.assertEqual(calls, [b"audio", b"audio"])
 
+    def _post_once(self, status_code, text):
+        """Run transcribe() against a single canned error response."""
+        class Response:
+            ok = False
+
+            def __init__(self):
+                self.status_code = status_code
+                self.text = text
+
+            def json(self):
+                return {}
+
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "key"}, clear=True):
+            with mock.patch.object(transcriber.requests, "post",
+                                   side_effect=lambda *a, **k: Response()):
+                with self.assertRaises(transcriber.TranscriptionError) as caught:
+                    transcriber.transcribe(io.BytesIO(b"audio"), "groq", "m")
+        return str(caught.exception)
+
+    def test_network_block_403_explains_the_vpn(self):
+        """Groq answers a healthy upload from a VPN exit IP with this 403.
+        The raw body says 'check your network settings', which reads like a
+        local misconfiguration and sends you debugging the wrong layer."""
+        message = self._post_once(
+            403, '{"error":{"message":"Access denied. Please check your network settings."}}')
+        self.assertIn("VPN", message)
+        self.assertIn("split tunnel", message.lower())
+
+    def test_plain_403_is_not_mistaken_for_a_vpn_block(self):
+        """A permissions/quota 403 must keep its own body, not blame the VPN."""
+        message = self._post_once(
+            403, '{"error":{"message":"You exceeded your current quota."}}')
+        self.assertNotIn("VPN", message)
+        self.assertIn("quota", message)
+
+    def test_401_reports_a_bad_key(self):
+        message = self._post_once(401, '{"error":{"message":"Invalid API Key"}}')
+        self.assertIn("API key", message)
+
 
 class HotkeyResilienceTests(unittest.TestCase):
     """macOS disables CGEventTaps after sleep/wake or throttling; the listener

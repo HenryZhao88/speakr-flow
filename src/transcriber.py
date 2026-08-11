@@ -39,7 +39,45 @@ def _error_body(response):
     return text
 
 
-def _post_with_retries(url, key, files, data):
+# Groq (and OpenAI) fronts their API with Cloudflare, which refuses commercial
+# VPN and datacenter exit IPs. The upload succeeds in full and *then* comes back
+# 403 "check your network settings" — which reads like a local misconfiguration
+# and sends you auditing DNS, certs and MTU. It is none of those: the exit IP is
+# simply not welcome. Retrying cannot help, so name the real cause instead.
+_NETWORK_BLOCK_MARKERS = (
+    "check your network settings",
+    "access denied",
+)
+
+_VPN_BLOCK_MESSAGE = (
+    "{provider} refused this request (403) because it does not accept your "
+    "current exit IP address — this is what a VPN or proxy looks like to them. "
+    "The recording uploaded fine; only the source address was rejected. "
+    "Fix: turn the VPN off, or add SpeakrFlow to your VPN's split tunnel "
+    "exclusions so its traffic bypasses the tunnel."
+)
+
+
+def _friendly_error(response, provider):
+    """Turn a provider HTTP error into something that names the actual problem."""
+    body = _error_body(response)
+    lowered = body.lower()
+    label = provider.capitalize()
+
+    if response.status_code == 403 and any(m in lowered for m in _NETWORK_BLOCK_MARKERS):
+        return _VPN_BLOCK_MESSAGE.format(provider=label)
+
+    if response.status_code == 401:
+        return (
+            f"{label} rejected the API key (401). Check the "
+            f"{provider.upper()}_API_KEY line in your .env, then use "
+            f"“Reload .env” from the menu bar. Server said: {body}"
+        )
+
+    return f"{response.status_code}: {body}"
+
+
+def _post_with_retries(url, key, files, data, provider="the provider"):
     last_error = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         file_obj = files["file"][1]
@@ -70,7 +108,7 @@ def _post_with_retries(url, key, files, data):
             time.sleep(0.5 * attempt)
             continue
 
-        raise TranscriptionError(f"{response.status_code}: {_error_body(response)}")
+        raise TranscriptionError(_friendly_error(response, provider))
 
     raise TranscriptionError(f"Network error: {last_error}")
 
@@ -96,7 +134,7 @@ def transcribe(wav_buffer, provider, model, language="", prompt=""):
     if prompt:
         data["prompt"] = prompt
 
-    response = _post_with_retries(url, key, files, data)
+    response = _post_with_retries(url, key, files, data, provider=provider)
     try:
         payload = response.json()
     except ValueError as e:
