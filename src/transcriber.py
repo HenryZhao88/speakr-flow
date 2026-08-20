@@ -3,6 +3,8 @@ import re
 import time
 import requests
 
+from .certs import ca_bundle
+
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 OPENAI_URL = "https://api.openai.com/v1/audio/transcriptions"
 REQUEST_TIMEOUT = (10, 90)
@@ -93,6 +95,10 @@ def _post_with_retries(url, key, files, data, provider="the provider"):
                 files=files,
                 data=data,
                 timeout=REQUEST_TIMEOUT,
+                # Resolved per request, not once at import: this process runs
+                # for weeks, and requests' own cached bundle path can be swept
+                # out from under it. See src/certs.py.
+                verify=ca_bundle(),
             )
         except requests.RequestException as e:
             last_error = e

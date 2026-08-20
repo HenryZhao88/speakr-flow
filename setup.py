@@ -31,9 +31,14 @@ OPTIONS = {
     },
     # _sounddevice_data MUST be a "package" (not zipped) so its bundled
     # libportaudio.dylib stays as a real file dlopen() can load.
+    #
+    # certifi MUST be here for the same reason. Zipped, its cacert.pem is not
+    # a real file, so certifi.where() extracts it to $TMPDIR and caches that
+    # path for the life of the process — and macOS purges $TMPDIR after ~3
+    # days, which breaks every transcription in an app left running that long.
     "packages": [
         "rumps", "pynput", "sounddevice", "_sounddevice_data",
-        "numpy", "scipy", "requests", "pyperclip", "dotenv",
+        "numpy", "scipy", "requests", "certifi", "pyperclip", "dotenv",
     ],
     "includes": [
         "src", "src.app", "src.settings_window",

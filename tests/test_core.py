@@ -8,7 +8,7 @@ from unittest import mock
 
 import numpy as np
 
-from src import config, history, transcriber
+from src import certs, config, history, transcriber
 from src.recorder import _has_speech, _speech_metrics
 
 
@@ -91,7 +91,7 @@ class TranscriberTests(unittest.TestCase):
             def json(self):
                 return self._payload
 
-        def fake_post(url, headers, files, data, timeout):
+        def fake_post(url, headers, files, data, timeout, verify):
             file_obj = files["file"][1]
             calls.append(file_obj.read())
             if len(calls) == 1:
@@ -238,3 +238,59 @@ class RecorderGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CaBundleTests(unittest.TestCase):
+    """py2app zips certifi into python3xx.zip, so certifi.where() extracts
+    cacert.pem to a temp file under $TMPDIR and caches the path forever.
+    macOS's dirhelper purges $TMPDIR after ~3 days, so a menu bar app left
+    running over a quiet weekend loses its CA bundle mid-process."""
+
+    def test_heals_when_certifi_path_was_purged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            purged = Path(tmpdir) / "T" / "tmpXXXXcacert.pem"
+            bundle = Path(tmpdir) / "cacert.pem"
+
+            with mock.patch.object(certs.certifi, "where", return_value=str(purged)):
+                with mock.patch.object(certs, "_BUNDLE", bundle):
+                    path = certs.ca_bundle()
+
+            self.assertTrue(os.path.exists(path), "must return a path that exists")
+            self.assertIn("BEGIN CERTIFICATE", Path(path).read_text(encoding="ascii"))
+
+    def test_uses_certifi_directly_when_its_file_is_real(self):
+        """The healthy case must not copy 236KB on every transcription."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real = Path(tmpdir) / "cacert.pem"
+            real.write_text("-----BEGIN CERTIFICATE-----", encoding="ascii")
+
+            with mock.patch.object(certs.certifi, "where", return_value=str(real)):
+                self.assertEqual(certs.ca_bundle(), str(real))
+
+    def test_transcribe_verifies_against_a_bundle_that_exists(self):
+        seen = {}
+
+        class Response:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"text": "hello"}
+
+        def fake_post(url, headers, files, data, timeout, verify):
+            seen["verify"] = verify
+            return Response()
+
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "key"}, clear=True):
+            with mock.patch.object(transcriber.requests, "post", side_effect=fake_post):
+                transcriber.transcribe(io.BytesIO(b"audio"), "groq", "m")
+
+        self.assertTrue(os.path.exists(seen["verify"]))
+
+    def test_bundle_ships_certifi_unzipped(self):
+        """The real fix: py2app must copy certifi as a real directory. If it
+        falls back into the zip, where() resumes extracting to $TMPDIR and the
+        3-day purge comes back."""
+        source = Path("setup.py").read_text(encoding="utf-8")
+        self.assertIn("certifi", source)
