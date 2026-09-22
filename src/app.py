@@ -288,6 +288,15 @@ class SpeakrFlowApp(rumps.App):
                     print(f"[SpeakrFlow] skipped: {skip_reason}")
                     detail = f"skipped: {skip_reason}"
                     return
+
+                # Save a copy to Downloads so the user can see it while processing
+                from .paths import RECORDING_FILE
+                try:
+                    with open(RECORDING_FILE, "wb") as f:
+                        f.write(wav.getvalue())
+                except Exception as e:
+                    print(f"[SpeakrFlow] failed to save recording copy: {e}")
+
                 text = transcribe(
                     wav,
                     provider=cfg["provider"],
@@ -321,6 +330,14 @@ class SpeakrFlowApp(rumps.App):
                 detail = f"Unexpected: {e}"
                 self._error(detail)
             finally:
+                # Clean up the recording copy now that we have a response (or error)
+                from .paths import RECORDING_FILE
+                try:
+                    if RECORDING_FILE.exists():
+                        RECORDING_FILE.unlink()
+                except Exception as e:
+                    print(f"[SpeakrFlow] failed to delete recording copy: {e}")
+
                 with self._state_lock:
                     self.busy = False
                 AppHelper.callAfter(self._finish_attempt, ok, detail)

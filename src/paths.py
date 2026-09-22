@@ -8,6 +8,9 @@ APP_NAME = "SpeakrFlow"
 DATA_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# User wants temporary recordings saved here for visibility
+RECORDING_FILE = Path.home() / "Downloads" / "!speakrflow-recording.wav"
+
 CONFIG_FILE = DATA_DIR / "config.json"
 HISTORY_FILE = DATA_DIR / "history.json"
 
