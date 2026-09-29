@@ -1,5 +1,6 @@
 import Quartz
 from pynput import keyboard
+from .diagnostics import logger
 
 # Map friendly names from the settings UI to pynput Key values.
 KEY_MAP = {
@@ -47,7 +48,7 @@ class ResilientListener(keyboard.Listener):
             tap = getattr(self, "_tap", None)
             if tap is not None:
                 Quartz.CGEventTapEnable(tap, True)
-                print("[SpeakrFlow] event tap was disabled by macOS; re-enabled")
+                logger.warning("Event tap was disabled by macOS; re-enabled")
             return
         super()._handle_message(proxy, event_type, event, refcon, injected)
 
@@ -69,7 +70,7 @@ class HoldHotkey:
             try:
                 self.on_press_cb()
             except Exception as e:
-                print(f"hotkey press handler error: {e}")
+                logger.exception("Hotkey press handler error")
 
     def _handle_release(self, key):
         if key == self.target and self.is_down:
@@ -77,7 +78,7 @@ class HoldHotkey:
             try:
                 self.on_release_cb()
             except Exception as e:
-                print(f"hotkey release handler error: {e}")
+                logger.exception("Hotkey release handler error")
 
     def start(self):
         if self.listener and self.listener.is_alive():

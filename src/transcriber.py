@@ -4,6 +4,7 @@ import time
 import requests
 
 from .certs import ca_bundle
+from .diagnostics import logger
 
 GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 OPENAI_URL = "https://api.openai.com/v1/audio/transcriptions"
@@ -89,6 +90,8 @@ def _post_with_retries(url, key, files, data, provider="the provider"):
             pass
 
         try:
+            logger.info("Transcription request provider=%s model=%s attempt=%d",
+                        provider, data.get("model"), attempt)
             response = requests.post(
                 url,
                 headers={"Authorization": f"Bearer {key}"},
@@ -101,12 +104,14 @@ def _post_with_retries(url, key, files, data, provider="the provider"):
                 verify=ca_bundle(),
             )
         except requests.RequestException as e:
+            logger.warning("Transcription network failure: %s", e)
             last_error = e
             if attempt == MAX_ATTEMPTS:
                 raise TranscriptionError(f"Network error: {e}") from e
             time.sleep(0.5 * attempt)
             continue
 
+        logger.info("Transcription response provider=%s status=%s", provider, response.status_code)
         if response.ok:
             return response
 
@@ -147,6 +152,10 @@ def transcribe(wav_buffer, provider, model, language="", prompt=""):
         raise TranscriptionError("Transcription provider returned invalid JSON") from e
 
     text = str(payload.get("text", "")).strip()
+    if not text:
+        logger.info("Transcription provider returned empty text")
+        return ""
     if _is_hallucination(text):
+        logger.info("Transcript suppressed by phrase filter: characters=%d", len(text))
         return ""
     return text

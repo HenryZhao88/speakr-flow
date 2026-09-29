@@ -1,7 +1,6 @@
 import sys
 import threading
 import time
-import traceback
 from pathlib import Path
 
 import objc
@@ -17,6 +16,7 @@ from Foundation import (
 from PyObjCTools import AppHelper
 
 from . import config, history, paste, settings_window, status
+from .diagnostics import logger
 from .paths import ENV_FILE
 from .recorder import Recorder
 from .transcriber import transcribe, TranscriptionError
@@ -68,6 +68,8 @@ class SpeakrFlowApp(rumps.App):
             quit_button=None,  # type: ignore[arg-type]  # rumps stubs say str but None is valid
         )
         self.cfg = config.load()
+        logger.info("Configuration provider=%s model=%s hotkey=%s env=%s",
+                    self.cfg["provider"], self.cfg["model"], self.cfg["hotkey"], ENV_FILE)
         self.recorder = Recorder()
         self.hotkey = None
         self.busy = False
@@ -104,12 +106,12 @@ class SpeakrFlowApp(rumps.App):
                 "SpeakrFlow listens for a global hotkey",
             )
         except Exception as e:
-            print(f"[SpeakrFlow] could not disable App Nap: {e}")
+            logger.warning("Could not disable App Nap: %s", e)
 
     def _on_wake(self):
         # The old event tap may have been disabled during sleep; a fresh
         # listener is cheap and guaranteed to work.
-        print("[SpeakrFlow] system woke from sleep; restarting hotkey listener")
+        logger.info("System woke from sleep; restarting hotkey listener")
         self._start_hotkey()
 
     # ---------- icon state ----------
@@ -249,7 +251,7 @@ class SpeakrFlowApp(rumps.App):
                 return
             hotkey = self.hotkey
         if not hotkey or not hotkey.is_alive():
-            print("[SpeakrFlow] hotkey listener stopped; restarting")
+            logger.warning("Hotkey listener stopped; restarting")
             self._start_hotkey()
 
     def _on_hotkey_down(self):
@@ -260,7 +262,7 @@ class SpeakrFlowApp(rumps.App):
         self._set_state_later("recording")
         try:
             self.recorder.start()
-            print("[SpeakrFlow] recording started")
+            logger.info("Recording started")
         except Exception as e:
             with self._state_lock:
                 self.recording = False
@@ -285,7 +287,7 @@ class SpeakrFlowApp(rumps.App):
             try:
                 wav, skip_reason = self.recorder.stop()
                 if wav is None:
-                    print(f"[SpeakrFlow] skipped: {skip_reason}")
+                    logger.info("Recording skipped: %s", skip_reason)
                     detail = f"skipped: {skip_reason}"
                     return
 
@@ -295,7 +297,7 @@ class SpeakrFlowApp(rumps.App):
                     with open(RECORDING_FILE, "wb") as f:
                         f.write(wav.getvalue())
                 except Exception as e:
-                    print(f"[SpeakrFlow] failed to save recording copy: {e}")
+                    logger.warning("Failed to save recording copy: %s", e)
 
                 text = transcribe(
                     wav,
@@ -305,10 +307,11 @@ class SpeakrFlowApp(rumps.App):
                     prompt=cfg["prompt"],
                 )
                 if not text:
-                    print("[SpeakrFlow] skipped: empty transcript")
+                    logger.info("Skipped: empty transcript")
                     detail = "skipped: empty transcript"
                     return
                 ok = True
+                logger.info("Transcription succeeded: %d characters", len(text))
                 detail = text
                 history.add(text, limit=cfg["history_limit"])
                 # NSMenu changes from a background thread don't flush reliably.
@@ -326,7 +329,7 @@ class SpeakrFlowApp(rumps.App):
                 detail = str(e)
                 self._error(detail)
             except Exception as e:
-                traceback.print_exc()
+                logger.exception("Recording worker failed")
                 detail = f"Unexpected: {e}"
                 self._error(detail)
             finally:
@@ -336,7 +339,7 @@ class SpeakrFlowApp(rumps.App):
                     if RECORDING_FILE.exists():
                         RECORDING_FILE.unlink()
                 except Exception as e:
-                    print(f"[SpeakrFlow] failed to delete recording copy: {e}")
+                    logger.warning("Failed to delete recording copy: %s", e)
 
                 with self._state_lock:
                     self.busy = False
@@ -345,7 +348,7 @@ class SpeakrFlowApp(rumps.App):
         threading.Thread(target=worker, daemon=True).start()
 
     def _error(self, msg):
-        print(f"[SpeakrFlow] {msg}")
+        logger.error("%s", msg)
         AppHelper.callAfter(self._notify_error, msg)
 
     def _notify_error(self, msg):

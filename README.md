@@ -75,3 +75,8 @@ User data is stored in `~/Library/Application Support/SpeakrFlow/`:
 - `history.json` — transcription history
 
 API keys live in `.env` (gitignored).
+
+Diagnostics are saved to `~/Library/Logs/SpeakrFlow/app.log` (rotated automatically).
+They include startup identity, recording failures, and API response codes, without
+logging API keys, audio, or transcript text. macOS crash reports are in
+`~/Library/Logs/DiagnosticReports/`.
