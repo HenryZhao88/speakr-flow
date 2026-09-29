@@ -24,6 +24,7 @@ cp .env.example .env
 
 From source (dev):
 ```bash
+python scripts/build_native.py
 python run.py
 ```
 
@@ -81,3 +82,10 @@ Diagnostics are saved to `~/Library/Logs/SpeakrFlow/app.log` (rotated automatica
 They include startup identity, recording failures, and API response codes, without
 logging API keys, audio, or transcript text. macOS crash reports are in
 `~/Library/Logs/DiagnosticReports/`.
+
+When a call exposes the built-in mic as multiple quiet channels, SpeakrFlow uses
+Apple's voice-processing input. It prepares that input on audio-device events,
+records only while the hotkey is held, and returns to ordinary input after the
+call. External microphones retain the existing capture path. No macOS preferences
+are changed. The native callback bridge is compiled automatically by the app build
+(source runs need the extra build step above and Apple's command-line tools).

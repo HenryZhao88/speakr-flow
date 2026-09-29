@@ -33,6 +33,12 @@ class Recorder:
         self._last_start = None
         self._stream_control = None
         self._blocked_stream = None
+        self._call_capture = None
+
+    def prepare_call_capture(self):
+        from .voice_capture import CallCapture
+        self._call_capture = CallCapture(self._callback)
+        self._call_capture.start()
 
     def _callback(self, indata, frames, time_info, status):
         with self.lock:
@@ -102,6 +108,18 @@ class Recorder:
         APIs accept normal WAV sample rates, so falling back is safer than
         dropping the recording.
         """
+        if self._call_capture is not None:
+            stream = self._call_capture.acquire()
+            if stream is not None:
+                try:
+                    stream.start()
+                    logger.info("Microphone started backend=voice-processing device=%s rate=%s",
+                                stream.device, stream.samplerate)
+                    return stream, int(stream.samplerate)
+                except Exception:
+                    stream.stop()
+                    stream.close()
+                    raise
         last_error = None
         for sample_rate in (SAMPLE_RATE, None):
             stream = None

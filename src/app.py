@@ -71,6 +71,7 @@ class SpeakrFlowApp(rumps.App):
         logger.info("Configuration provider=%s model=%s hotkey=%s env=%s",
                     self.cfg["provider"], self.cfg["model"], self.cfg["hotkey"], ENV_FILE)
         self.recorder = Recorder()
+        self.recorder.prepare_call_capture()
         self.hotkey = None
         self.busy = False
         self.recording = False
@@ -174,6 +175,7 @@ class SpeakrFlowApp(rumps.App):
         self.menu.add(rumps.MenuItem("Reload .env", callback=self.reload_env))
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("Settings…", callback=self.open_settings))
+        self.menu.add(rumps.MenuItem("Call Microphone Mode…", callback=self.open_microphone_mode))
         self.menu.add(rumps.MenuItem("Quit SpeakrFlow", callback=rumps.quit_application))
 
     def _add_history_items(self):
@@ -227,6 +229,10 @@ class SpeakrFlowApp(rumps.App):
             on_save=self._on_settings_saved,
             on_history_change=self._rebuild_menu,
         )
+
+    def open_microphone_mode(self, _):
+        from .voice_capture import show_microphone_modes
+        show_microphone_modes()
 
     def _on_settings_saved(self, new_cfg):
         self.cfg = config.normalize(new_cfg)

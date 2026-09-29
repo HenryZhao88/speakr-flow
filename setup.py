@@ -6,9 +6,18 @@
 The result lands in dist/SpeakrFlow.app — drag it to /Applications.
 """
 from setuptools import setup
+from pathlib import Path
+import subprocess
+import sys
+
+# Use Apple's native voice input when another app activates the built-in mic's
+# call mode. Compile a small callback bridge; no third-party audio runtime.
+NATIVE = Path(__file__).resolve().parent / "build" / "native" / "libvoice_capture.dylib"
+if "py2app" in sys.argv:
+    subprocess.run([sys.executable, "scripts/build_native.py"], check=True)
 
 APP = ["run.py"]
-DATA_FILES = [("assets", [
+DATA_FILES = [("native", [str(NATIVE)]), ("assets", [
     "assets/menubar_icon.png",
     "assets/menubar_icon_recording.png",
 ])]
