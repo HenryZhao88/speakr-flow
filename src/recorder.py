@@ -4,19 +4,20 @@ import time
 import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
+from .diagnostics import logger
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
 # Whisper hallucinates "Thank you", "Thanks for watching", etc. on silence.
-# Gate on duration and loudness before we even hit the API.
-MIN_DURATION_SEC = 0.4
+# Gate on loudness, not recording length: short words are valid input.
 MIN_OVERALL_RMS = 70     # int16; quiet rooms are often ~30-60.
 MIN_FRAME_RMS = 120      # speech should cross this in at least a few frames.
 MIN_ACTIVE_SEC = 0.12
 MIN_PEAK = 450
 FRAME_SEC = 0.03
 STARTUP_GRACE_SEC = 0.35
+STOP_GRACE_SEC = 1.0
 
 
 class Recorder:
@@ -30,6 +31,8 @@ class Recorder:
         self._audio_ready = threading.Event()
         self._last_status = None
         self._last_start = None
+        self._stream_control = None
+        self._blocked_stream = None
 
     def _callback(self, indata, frames, time_info, status):
         with self.lock:
@@ -42,6 +45,20 @@ class Recorder:
         errors = []
         if stream is None:
             return errors
+        control = self._stream_control
+        if control is not None and control[0] is stream and not stream.stopped:
+            _, stop_requested, finished = control
+            # A callback-stopped stream can already be inactive while its
+            # finished callback is still pending, so check stopped, not active.
+            # Let the audio callback stop its own IO thread first. Calling
+            # Pa_StopStream while it is active can deadlock CoreAudio's
+            # IsRunning listener against AudioOutputUnitStop during calls.
+            stop_requested.set()
+            if not finished.wait(STOP_GRACE_SEC):
+                # Keep ownership and refuse new streams. A direct stop here
+                # would re-enter the exact native lock cycle we are avoiding.
+                self._blocked_stream = stream
+                raise RuntimeError("Microphone did not finish stopping; restart SpeakrFlow")
         try:
             if abort:
                 stream.abort()
@@ -51,18 +68,31 @@ class Recorder:
             errors.append(f"stop failed: {e}")
         try:
             stream.close()
+            if self._stream_control is control:
+                self._stream_control = None
         except Exception as e:
             errors.append(f"close failed: {e}")
         return errors
 
     def _make_stream(self, sample_rate):
-        return sd.InputStream(
+        stop_requested = threading.Event()
+        finished = threading.Event()
+
+        def callback(indata, frames, time_info, status):
+            if stop_requested.is_set():
+                raise sd.CallbackAbort
+            self._callback(indata, frames, time_info, status)
+
+        stream = sd.InputStream(
             samplerate=sample_rate,
             channels=CHANNELS,
             dtype="int16",
             latency="low",
-            callback=self._callback,
+            callback=callback,
+            finished_callback=finished.set,
         )
+        self._stream_control = (stream, stop_requested, finished)
+        return stream
 
     def _start_stream(self):
         """Prefer 16 kHz, but fall back to the system default input rate.
@@ -76,12 +106,19 @@ class Recorder:
         for sample_rate in (SAMPLE_RATE, None):
             stream = None
             try:
+                logger.info("Opening microphone requested_rate=%s", sample_rate)
                 stream = self._make_stream(sample_rate)
+                logger.info(
+                    "Microphone opened device=%s rate=%s latency=%s; starting stream",
+                    stream.device, stream.samplerate, stream.latency,
+                )
                 stream.start()
+                logger.info("Microphone stream started active=%s", stream.active)
                 actual_rate = int(stream.samplerate or sample_rate or SAMPLE_RATE)
                 return stream, actual_rate
             except Exception as e:
                 last_error = e
+                logger.exception("Microphone startup failed requested_rate=%s", sample_rate)
                 self._close_stream(stream, abort=True)
         raise last_error
 
@@ -93,24 +130,33 @@ class Recorder:
         try:
             terminate()
             initialize()
-            print("[SpeakrFlow] audio backend reset")
+            logger.info("Audio backend reset")
         except Exception as e:
-            print(f"[SpeakrFlow] audio backend reset failed: {e}")
+            logger.warning("Audio backend reset failed: %s", e)
 
     def start(self):
-        old_stream = None
+        if self._blocked_stream is not None:
+            raise RuntimeError("Microphone did not finish stopping; restart SpeakrFlow")
+        logger.info("Recording requested")
+        # Log the backend's view before opening: long-lived CoreAudio device
+        # lists can differ from a new process after a call or device change.
+        try:
+            logger.info("Input device before recording: %s", sd.query_devices(kind="input"))
+        except Exception:
+            logger.exception("Could not inspect input device")
+        # Close before resetting the buffer so a late callback from an older
+        # recording cannot contaminate this recording.
         with self.lock:
             old_stream = self.stream
             self.stream = None
+        self._close_stream(old_stream, abort=True)
+
+        with self.lock:
             self.chunks = []
             self.sample_rate = SAMPLE_RATE
             self._last_status = None
             self._last_start = time.monotonic()
             self._audio_ready.clear()
-
-        # If a release event was missed, do not let an old CoreAudio stream
-        # poison the next recording.
-        self._close_stream(old_stream, abort=True)
 
         stream, sample_rate = self._start_stream()
         with self.lock:
@@ -119,11 +165,13 @@ class Recorder:
 
         # Give CoreAudio a short chance to deliver the first buffer after idle.
         # The user can still keep holding the key; audio is appended normally.
-        self._audio_ready.wait(STARTUP_GRACE_SEC)
+        ready = self._audio_ready.wait(STARTUP_GRACE_SEC)
+        logger.info("Microphone first buffer received=%s", ready)
 
     def stop(self):
         """Returns (wav_buffer, reason). wav_buffer is None when we skipped;
-        reason is a short string explaining why ('too_short', 'silence', or None)."""
+        reason is a short string explaining why ('no_audio', 'silence', or None)."""
+        logger.info("Recording stop requested")
         with self.lock:
             stream = self.stream
             self.stream = None
@@ -133,6 +181,7 @@ class Recorder:
             return None, "no_stream"
 
         close_errors = self._close_stream(stream)
+        logger.info("Microphone closed errors=%s", close_errors)
         with self.lock:
             if not self.chunks:
                 self._reset_backend()
@@ -145,11 +194,8 @@ class Recorder:
             last_status = self._last_status
 
         duration = len(audio) / sample_rate
-        if duration < MIN_DURATION_SEC:
-            return None, "too_short"
-
         metrics = _speech_metrics(audio, sample_rate)
-        print(
+        logger.info(
             "[SpeakrFlow] captured "
             f"{duration:.2f}s @ {sample_rate}Hz, "
             f"rms={metrics['overall_rms']:.1f}, "

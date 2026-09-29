@@ -5,6 +5,7 @@ import time
 STATE_LABELS = {
     "idle": "Idle",
     "recording": "Recording…",
+    "finishing": "Finishing recording…",
     "transcribing": "Transcribing…",
 }
 

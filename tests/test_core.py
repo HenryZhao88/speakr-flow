@@ -2,6 +2,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -9,7 +10,9 @@ from unittest import mock
 import numpy as np
 
 from src import certs, config, history, transcriber
-from src.recorder import _has_speech, _speech_metrics
+from src import recorder
+from src.recorder import Recorder, _has_speech, _speech_metrics
+from scipy.io import wavfile
 
 
 class ConfigTests(unittest.TestCase):
@@ -214,6 +217,7 @@ class StatusTests(unittest.TestCase):
         from src import status
         self.assertEqual(status.status_line("idle"), "Status: Idle")
         self.assertEqual(status.status_line("recording"), "Status: Recording…")
+        self.assertEqual(status.status_line("finishing"), "Status: Finishing recording…")
         self.assertEqual(status.status_line("transcribing"), "Status: Transcribing…")
 
     def test_last_line_formats_success_and_error(self):
@@ -226,6 +230,18 @@ class StatusTests(unittest.TestCase):
 
 
 class RecorderGateTests(unittest.TestCase):
+    def test_brief_recording_is_returned_without_duration_cutoff(self):
+        for samples in (16, 160, 1600, 4000):
+            with self.subTest(samples=samples):
+                capture = Recorder()
+                capture.stream = mock.Mock()
+                capture.chunks = [np.full((samples, 1), 600, dtype=np.int16)]
+                wav, reason = capture.stop()
+                self.assertIsNone(reason)
+                rate, audio = wavfile.read(wav)
+                self.assertEqual(rate, 16000)
+                self.assertEqual(len(audio), samples)
+
     def test_silence_is_rejected(self):
         audio = np.zeros((16000, 1), dtype=np.int16)
         self.assertFalse(_has_speech(_speech_metrics(audio, 16000)))
@@ -234,6 +250,56 @@ class RecorderGateTests(unittest.TestCase):
         audio = np.zeros((16000, 1), dtype=np.int16)
         audio[2000:5000] = 500
         self.assertTrue(_has_speech(_speech_metrics(audio, 16000)))
+
+
+class RecorderLifecycleTests(unittest.TestCase):
+    def test_native_stop_waits_for_callback_to_finish(self):
+        self._check_stop_waits(active=True)
+
+    def test_inactive_stream_still_waits_for_pending_finish_callback(self):
+        self._check_stop_waits(active=False)
+
+    def _check_stop_waits(self, *, active):
+        capture = Recorder()
+        stream = mock.Mock(active=active, stopped=False)
+        with mock.patch.object(recorder.sd, "InputStream", return_value=stream) as factory:
+            capture.stream = capture._make_stream(16000)
+        callback = factory.call_args.kwargs["callback"]
+        finished = factory.call_args.kwargs["finished_callback"]
+        callback(np.full((1600, 1), 600, dtype=np.int16), 1600, None, None)
+        result = []
+        worker = threading.Thread(target=lambda: result.append(capture.stop()))
+        worker.start()
+        self.assertTrue(capture._stream_control[1].wait(.5))
+        stream.stop.assert_not_called()
+        stream.close.assert_not_called()
+        if active:
+            with self.assertRaises(recorder.sd.CallbackAbort):
+                callback(np.zeros((160, 1), dtype=np.int16), 160, None, None)
+        # CoreAudio signals that the callback thread has finished before
+        # foreground shutdown may take its native locks.
+        finished()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        stream.stop.assert_called_once()
+        stream.close.assert_called_once()
+        self.assertIsNone(result[0][1])
+        _, audio = wavfile.read(result[0][0])
+        self.assertEqual(len(audio), 1600)
+
+    def test_missing_finish_callback_fails_without_blocking_native_stop(self):
+        capture = Recorder()
+        stream = mock.Mock(active=True, stopped=False)
+        with mock.patch.object(recorder.sd, "InputStream", return_value=stream):
+            capture.stream = capture._make_stream(16000)
+        with mock.patch.object(recorder, "STOP_GRACE_SEC", .01):
+            with self.assertRaisesRegex(RuntimeError, "restart SpeakrFlow"):
+                capture.stop()
+        stream.stop.assert_not_called()
+        stream.close.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, "restart SpeakrFlow"):
+            capture.start()
+        self.assertIs(capture._blocked_stream, stream)
 
 
 if __name__ == "__main__":

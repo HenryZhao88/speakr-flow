@@ -5,6 +5,7 @@ A free, local Wispr Flow clone for macOS. Hold a key, talk, release — it trans
 ## How it works
 - Hold the configured key (default: **Right Option**) to record
 - Release to transcribe (Groq's `whisper-large-v3-turbo` by default — fast and basically free)
+- There is no minimum recording length; silence is skipped.
 - The result is pasted at your cursor and saved to history
 
 ## Setup
@@ -52,10 +53,10 @@ The app re-enables its key listener automatically when macOS disables it (which 
 The icon shows what the app is doing:
 - **Plain mic** — idle, waiting for the hotkey
 - **Red mic** — recording
-- **"… Ns" next to the icon** — transcription request in flight, counting seconds (so a slow API call is visibly alive, not frozen)
+- **"… Ns" next to the icon** — finishing the recording or waiting for transcription, counting seconds
 
 Click the 🎙 icon for:
-- **Status** line (Idle / Recording… / Transcribing…) and the result of the last attempt (✓/⚠ with time and details)
+- **Status** line (Idle / Recording… / Finishing recording… / Transcribing…) and the result of the last attempt (✓/⚠ with time and details)
 - Recent transcriptions (click any to copy)
 - Clear history
 - **Open Settings…** — provider, model, hotkey, language, prompt, auto-paste, etc.

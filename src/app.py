@@ -130,7 +130,7 @@ class SpeakrFlowApp(rumps.App):
         """Main-thread only: sync icon, menu bar title, and status menu item."""
         self.status_item.title = status.status_line(state)
         self._set_recording_icon(state == "recording")
-        if state == "transcribing":
+        if state in ("finishing", "transcribing"):
             self._transcribe_started = time.monotonic()
             self.title = status.transcribing_title(0)
             self._status_timer.start()
@@ -276,10 +276,8 @@ class SpeakrFlowApp(rumps.App):
             self.recording = False
             self.busy = True
             cfg = dict(self.cfg)
-        # The red mic drops as soon as the key is released; the menu bar shows
-        # "…" with elapsed seconds while the network call is in flight so a
-        # slow API is visibly still alive rather than frozen.
-        self._set_state_later("transcribing")
+        # Closing the mic is a separate stage from the network request.
+        self._set_state_later("finishing")
 
         def worker():
             ok = False
@@ -299,6 +297,7 @@ class SpeakrFlowApp(rumps.App):
                 except Exception as e:
                     logger.warning("Failed to save recording copy: %s", e)
 
+                self._set_state_later("transcribing")
                 text = transcribe(
                     wav,
                     provider=cfg["provider"],
