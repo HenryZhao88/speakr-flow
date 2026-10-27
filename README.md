@@ -64,6 +64,22 @@ Click the 🎙 icon for:
 - Reload `.env`
 - Quit
 
+## Choosing a microphone
+
+Open **Settings… → Microphone**. **Mac default** follows the current macOS
+input device. Or choose a specific microphone, such as **MacBook Pro Microphone**,
+your iPhone, or AirPods, then click **Save**. SpeakrFlow remembers that choice
+across restarts and uses it for the next recording, independently of your audio
+output. You can listen through AirPods while recording from your Mac or iPhone.
+
+The list refreshes when you open it; **Refresh** also picks up newly connected
+devices. An iPhone must be available through
+[Continuity Camera](https://support.apple.com/en-us/102546) to appear.
+If a chosen mic disconnects, it stays selected and is marked **unavailable**;
+reconnect it or choose another mic. SpeakrFlow reports the missing microphone
+instead of silently recording from a different one. System sound settings are
+never changed.
+
 ## Providers
 
 Default: **Groq** with `whisper-large-v3-turbo`. Sign up at https://console.groq.com — has a generous free tier.

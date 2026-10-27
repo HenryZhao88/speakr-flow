@@ -10,6 +10,7 @@ from .audio_environment import AudioEnvironment
 from .diagnostics import logger
 
 Receive = C.CFUNCTYPE(None, C.POINTER(C.c_float), C.c_uint)
+_UNCHANGED = object()
 
 
 class CaptureStats(C.Structure):
@@ -33,8 +34,8 @@ def _library():
     if path is None:
         raise RuntimeError("Native microphone library is missing; rebuild SpeakrFlow")
     lib = C.CDLL(str(path))
-    lib.sf_voice_create.argtypes = [Receive, C.c_char_p, C.c_uint]
-    lib.sf_voice_create.restype = C.c_void_p
+    lib.sf_voice_create_for_device.argtypes = [Receive, C.c_uint32, C.c_char_p, C.c_uint]
+    lib.sf_voice_create_for_device.restype = C.c_void_p
     lib.sf_voice_rate.argtypes = [C.c_void_p]
     lib.sf_voice_rate.restype = C.c_double
     lib.sf_voice_start.argtypes = [C.c_void_p, C.c_char_p, C.c_uint]
@@ -74,7 +75,7 @@ class VoiceStream:
         self.latency = None
         self._receive = Receive(self._received)
         error = C.create_string_buffer(1024)
-        self.handle = self.lib.sf_voice_create(self._receive, error, len(error))
+        self.handle = self.lib.sf_voice_create_for_device(self._receive, device, error, len(error))
         if not self.handle:
             raise RuntimeError(error.value.decode() or "Could not prepare voice input")
         self.samplerate = self.lib.sf_voice_rate(self.handle)
@@ -129,11 +130,17 @@ class CallCapture:
         self.leased = False
         self.identity = None
         self.closed = False
+        self.input_uid = None
         self.thread = threading.Thread(target=self._watch, name="CallAudio", daemon=True)
 
     def start(self):
         self.thread.start()
         self.environment.dirty.set()
+
+    def select_input(self, uid):
+        with self.lock:
+            self.input_uid = uid
+            self.environment.dirty.set()
 
     def _watch(self):
         while True:
@@ -150,7 +157,15 @@ class CallCapture:
     def _refresh(self):
         if self.leased:
             return
-        state = self.environment.snapshot()
+        try:
+            state = self.environment.snapshot(self.input_uid)
+        except Exception:
+            if self.stream:
+                self.stream.dispose()
+                self.stream = None
+            self.identity = None
+            self.environment.subscribe(None)
+            raise
         logger.debug("Call input environment: %s", state)
         self.environment.subscribe(state)
         identity = (state["device"], state["external_inputs"])
@@ -158,8 +173,8 @@ class CallCapture:
             # Remove our own VPIO contribution before reading the new route.
             self.stream.dispose()
             self.stream = None
-            state = self.environment.snapshot()
-        self.identity = identity
+            state = self.environment.snapshot(self.input_uid)
+        self.identity = (state["device"], state["external_inputs"])
         if needs_voice_capture(state):
             if self.stream is None:
                 logger.info("Preparing processed call input: %s", state)
@@ -169,11 +184,14 @@ class CallCapture:
             self.stream.dispose()
             self.stream = None
 
-    def acquire(self):
+    def acquire(self, input_uid=_UNCHANGED):
         with self.lock:
+            if input_uid is not _UNCHANGED:
+                self.input_uid = input_uid
             self._refresh()
-            if self.stream:
-                self.leased = True
+            # Raw recording also owns the route until it closes. Do not prepare
+            # a different input halfway through a held hotkey.
+            self.leased = True
             return self.stream
 
     def release(self):

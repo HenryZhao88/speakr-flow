@@ -7,6 +7,8 @@ DEFAULTS = {
     "provider": "groq",                      # "groq" or "openai"
     "model": "whisper-large-v3-turbo",       # groq default; openai uses "whisper-1"
     "hotkey": "right_option",                # see hotkey.py for valid values
+    "input_device_uid": None,                # None follows the live macOS default
+    "input_device_name": "",                 # display name when the mic is disconnected
     "auto_paste": True,                      # paste transcription at cursor
     "play_sounds": True,                     # start/stop chimes
     "language": "",                          # blank = auto-detect
@@ -42,6 +44,9 @@ def normalize(data):
     cfg["model"] = model
 
     cfg["hotkey"] = str(cfg.get("hotkey") or DEFAULTS["hotkey"])
+    uid = cfg.get("input_device_uid")
+    cfg["input_device_uid"] = uid if isinstance(uid, str) and uid else None
+    cfg["input_device_name"] = str(cfg.get("input_device_name") or "") if cfg["input_device_uid"] else ""
     cfg["language"] = str(cfg.get("language") or "").strip()
     cfg["prompt"] = str(cfg.get("prompt") or "").strip()
     cfg["auto_paste"] = bool(cfg.get("auto_paste"))

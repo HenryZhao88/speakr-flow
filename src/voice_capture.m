@@ -1,5 +1,6 @@
 #import <AVFAudio/AVFAudio.h>
 #import <AVFoundation/AVCaptureDevice.h>
+#import <AudioToolbox/AudioToolbox.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <time.h>
@@ -19,7 +20,7 @@ typedef struct {
     CaptureStats stats;
 } Capture;
 
-void *sf_voice_create(Receive receive, char *error, unsigned capacity) {
+void *sf_voice_create_for_device(Receive receive, AudioDeviceID device, char *error, unsigned capacity) {
     @autoreleasepool {
         Capture *capture = NULL;
         @try {
@@ -28,6 +29,21 @@ void *sf_voice_create(Receive receive, char *error, unsigned capacity) {
         NSError *failure = nil;
         if (![input setVoiceProcessingEnabled:YES error:&failure]) {
             snprintf(error, capacity, "%s", failure.localizedDescription.UTF8String);
+            return NULL;
+        }
+        // VoiceProcessingIO has separate input (1) and output (0) devices.
+        // Bind only input; the user's speaker/headphone route stays untouched.
+        OSStatus status = AudioUnitSetProperty(input.audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 1,
+            &device, sizeof(device));
+        AudioDeviceID actual = 0;
+        UInt32 size = sizeof(actual);
+        if (!status) status = AudioUnitGetProperty(input.audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 1,
+            &actual, &size);
+        if (status || actual != device) {
+            snprintf(error, capacity, "Could not select call microphone (status=%d, requested=%u, actual=%u)",
+                (int)status, (unsigned)device, (unsigned)actual);
             return NULL;
         }
         input.voiceProcessingBypassed = NO;

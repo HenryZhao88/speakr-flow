@@ -34,6 +34,12 @@ class AudioEnvironment:
             U32, C.POINTER(Address), U32, C.c_void_p, C.POINTER(U32)]
         self.lib.AudioObjectGetPropertyData.argtypes = [
             U32, C.POINTER(Address), U32, C.c_void_p, C.POINTER(U32), C.c_void_p]
+        self.cf = C.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        self.cf.CFStringGetLength.argtypes = [C.c_void_p]
+        self.cf.CFStringGetLength.restype = C.c_long
+        self.cf.CFStringGetCString.argtypes = [C.c_void_p, C.c_void_p, C.c_long, U32]
+        self.cf.CFStringGetCString.restype = C.c_bool
+        self.cf.CFRelease.argtypes = [C.c_void_p]
         for name in ("AudioObjectAddPropertyListener", "AudioObjectRemovePropertyListener"):
             getattr(self.lib, name).argtypes = [U32, C.POINTER(Address), Listener, C.c_void_p]
         self.dirty = threading.Event()
@@ -78,11 +84,50 @@ class AudioEnvironment:
         data = self.data(obj, selector, scope)
         return tuple((U32 * (len(data) // 4)).from_buffer_copy(data))
 
-    def snapshot(self):
-        device = self.value(1, "dIn ")
+    def string(self, obj, selector):
+        value = self.value(obj, selector, C.c_void_p)
+        if not value:
+            return ""
+        try:
+            text = C.create_string_buffer(self.cf.CFStringGetLength(value) * 4 + 1)
+            if not self.cf.CFStringGetCString(value, text, len(text), 0x08000100):
+                raise ValueError("Could not read microphone name")
+            return text.value.decode("utf-8")
+        finally:
+            self.cf.CFRelease(value)
+
+    def input_channels(self, device):
         layout = self.data(device, "slay", "inpt")
         count = U32.from_buffer_copy(layout).value
+        if not count:
+            return 0
         buffers = (Buffer * count).from_buffer_copy(layout, BufferList.buffers.offset)
+        return sum(buffer.channels for buffer in buffers)
+
+    def input_devices(self):
+        devices = []
+        for device in self.ids(1, "dev#"):
+            try:
+                channels = self.input_channels(device)
+                if channels:
+                    devices.append({"id": device, "uid": self.string(device, "uid "),
+                                    "name": self.string(device, "lnam"), "channels": channels})
+            except OSError:
+                continue  # A device can disconnect while enumerating.
+        return devices
+
+    def resolve_input(self, uid=None):
+        default = self.value(1, "dIn ") if uid is None else None
+        for device in self.input_devices():
+            if (device["uid"] == uid if uid is not None else device["id"] == default):
+                return device
+        if uid is not None:
+            raise RuntimeError("Selected microphone is unavailable. Reconnect it or choose another mic in Settings.")
+        raise RuntimeError("Mac default microphone is unavailable. Choose an input in macOS Sound settings.")
+
+    def snapshot(self, input_uid=None):
+        selected = self.resolve_input(input_uid)
+        device = selected["id"]
         processes, active = [], []
         for obj in self.ids(1, "prs#"):
             try:
@@ -95,18 +140,19 @@ class AudioEnvironment:
                 pass  # A process can exit between enumeration and inspection.
         return {
             "device": device,
-            "channels": sum(buffer.channels for buffer in buffers),
+            "channels": selected["channels"],
             "builtin": self.value(device, "tran") == fourcc("bltn"),
             "external_inputs": tuple(sorted(active)),
             "processes": tuple(processes),
         }
 
     def subscribe(self, state):
-        wanted = {(1, "dIn ", "glob"), (1, "prs#", "glob"),
-                  (state["device"], "slay", "inpt"),
-                  (state["device"], "gone", "glob")}
-        wanted.update((obj, "piri", "glob") for obj in state["processes"])
-        wanted.update((obj, "pdv#", "inpt") for obj in state["processes"])
+        wanted = {(1, "dIn ", "glob"), (1, "prs#", "glob"), (1, "dev#", "glob")}
+        if state is not None:
+            wanted.update({(state["device"], "slay", "inpt"),
+                           (state["device"], "gone", "glob")})
+            wanted.update((obj, "piri", "glob") for obj in state["processes"])
+            wanted.update((obj, "pdv#", "inpt") for obj in state["processes"])
         for entry in self._subscriptions - wanted:
             self._listen(entry, False)
         for entry in wanted - self._subscriptions:

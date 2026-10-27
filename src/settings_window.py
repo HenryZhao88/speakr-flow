@@ -21,6 +21,8 @@ from AppKit import (
 )
 
 from . import config, history, hotkey
+from .input_devices import available_inputs
+from .diagnostics import logger
 from .paths import ENV_FILE
 
 
@@ -102,7 +104,7 @@ class SettingsController(NSObject):
 
     @objc.python_method
     def _build_window(self):
-        W, H = 540, 620
+        W, H = 540, 692
         style = (
             NSWindowStyleMaskTitled
             | NSWindowStyleMaskClosable
@@ -125,6 +127,21 @@ class SettingsController(NSObject):
             hotkey.available_keys(), self.cfg["hotkey"], 160, y - 4,
         )
         cv.addSubview_(self.hotkey_box)
+
+        y -= 38
+        cv.addSubview_(self._label("Microphone", 24, y))
+        self.microphone_box = self._popup([], None, 160, y - 4, w=270)
+        cv.addSubview_(self.microphone_box)
+        cv.addSubview_(self._button("Refresh", 438, y - 4, action="refreshMicrophones:", w=80))
+        for offset, text in ((22, "Used by SpeakrFlow. Changes apply to the next recording."),
+                             (38, "iPhone appears when Continuity Camera is available.")):
+            hint = self._label(text, 160, y - offset, w=360)
+            hint.setFont_(NSFont.systemFontOfSize_(11))
+            hint.setTextColor_(NSColor.secondaryLabelColor())
+            cv.addSubview_(hint)
+        self._refresh_microphones()
+        self.microphone_box.menu().setDelegate_(self)
+        y -= 34
 
         y -= 38
         cv.addSubview_(self._label("Model", 24, y))
@@ -274,12 +291,55 @@ class SettingsController(NSObject):
     # ---------- actions ----------
 
     @objc.python_method
+    def _selected_microphone(self):
+        index = self.microphone_box.indexOfSelectedItem()
+        if index >= 0 and hasattr(self, "microphones"):
+            return self.microphones[index]
+        return {"uid": self.cfg["input_device_uid"], "name": self.cfg["input_device_name"]}
+
+    @objc.python_method
+    def _refresh_microphones(self):
+        selected = self._selected_microphone()
+        try:
+            devices = available_inputs()
+        except Exception:
+            logger.exception("Could not list microphones")
+            # Preserve the current choice even if enumeration fails.
+            devices = []
+        self.microphones = [{"uid": None, "name": "Mac default"}] + devices
+        if selected["uid"] and not any(d["uid"] == selected["uid"] for d in devices):
+            self.microphones.append({**selected, "unavailable": True})
+        self.microphone_box.removeAllItems()
+        titles = set()
+        for index, device in enumerate(self.microphones):
+            title = device["name"] or "Selected microphone"
+            if device.get("unavailable"):
+                title += " (unavailable)"
+            base, number = title, 2
+            while title in titles:
+                title = f"{base} ({number})"
+                number += 1
+            titles.add(title)
+            self.microphone_box.addItemWithTitle_(title)
+            if device["uid"] == selected["uid"]:
+                self.microphone_box.selectItemAtIndex_(index)
+
+    def refreshMicrophones_(self, sender):
+        self._refresh_microphones()
+
+    def menuNeedsUpdate_(self, menu):
+        self._refresh_microphones()
+
+    @objc.python_method
     def show(self):
         NSApp.activateIgnoringOtherApps_(True)
         self.window.makeKeyAndOrderFront_(None)
 
     def save_(self, sender):
         new_cfg = dict(self.cfg)
+        microphone = self._selected_microphone()
+        new_cfg["input_device_uid"] = microphone["uid"]
+        new_cfg["input_device_name"] = microphone["name"] if microphone["uid"] else ""
         new_cfg["hotkey"] = str(self.hotkey_box.titleOfSelectedItem())
         new_cfg["model"] = str(self.model_field.stringValue()).strip() or self.cfg["model"]
         new_cfg["language"] = str(self.lang_field.stringValue()).strip()

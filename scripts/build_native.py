@@ -8,6 +8,6 @@ output.parent.mkdir(parents=True, exist_ok=True)
 subprocess.run([
     "/usr/bin/clang", "-dynamiclib", "-fobjc-arc", "-fblocks", "-O2",
     "-Wall", "-Wextra", "-framework", "AVFAudio", "-framework", "Foundation",
-    "-framework", "AVFoundation",
+    "-framework", "AVFoundation", "-framework", "AudioToolbox",
     str(root / "src" / "voice_capture.m"), "-o", str(output),
 ], check=True)

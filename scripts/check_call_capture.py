@@ -12,6 +12,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from Foundation import NSDate, NSRunLoop
+from src.audio_environment import AudioEnvironment
 from src.recorder import Recorder
 from src.voice_capture import CallCapture, VoiceStream
 
@@ -25,7 +26,12 @@ def pump_until(predicate, timeout=10):
 
 
 def peer():
-    stream = VoiceStream(lambda *args: None, None, lambda: None)
+    environment = AudioEnvironment()
+    try:
+        device = environment.resolve_input()["id"]
+    finally:
+        environment.close()
+    stream = VoiceStream(lambda *args: None, device, lambda: None)
     try:
         stream.start()
         # Parent controls lifetime; exiting the parent closes the pipe.

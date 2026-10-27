@@ -5,6 +5,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
 from .diagnostics import logger
+from . import input_devices
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -23,7 +24,7 @@ STOP_GRACE_SEC = 1.0
 class Recorder:
     """Streams mic audio into a buffer until stop() is called."""
 
-    def __init__(self):
+    def __init__(self, input_device_uid=None):
         self.chunks = []
         self.stream = None
         self.sample_rate = SAMPLE_RATE
@@ -34,11 +35,18 @@ class Recorder:
         self._stream_control = None
         self._blocked_stream = None
         self._call_capture = None
+        self.input_device_uid = input_device_uid
 
     def prepare_call_capture(self):
         from .voice_capture import CallCapture
         self._call_capture = CallCapture(self._callback)
+        self._call_capture.select_input(self.input_device_uid)
         self._call_capture.start()
+
+    def select_input(self, uid):
+        self.input_device_uid = uid
+        if self._call_capture is not None:
+            self._call_capture.select_input(uid)
 
     def _callback(self, indata, frames, time_info, status):
         with self.lock:
@@ -80,7 +88,7 @@ class Recorder:
             errors.append(f"close failed: {e}")
         return errors
 
-    def _make_stream(self, sample_rate):
+    def _make_stream(self, sample_rate, device=None):
         stop_requested = threading.Event()
         finished = threading.Event()
 
@@ -90,6 +98,7 @@ class Recorder:
             self._callback(indata, frames, time_info, status)
 
         stream = sd.InputStream(
+            device=device,
             samplerate=sample_rate,
             channels=CHANNELS,
             dtype="int16",
@@ -101,15 +110,16 @@ class Recorder:
         return stream
 
     def _start_stream(self):
-        """Prefer 16 kHz, but fall back to the system default input rate.
+        """Prefer 16 kHz, but fall back to the selected microphone's native rate.
 
         Some macOS/CoreAudio devices are unreliable immediately after sleep or
         long idle periods when opened at a non-native sample rate. Transcription
         APIs accept normal WAV sample rates, so falling back is safer than
         dropping the recording.
         """
+        input_uid = self.input_device_uid
         if self._call_capture is not None:
-            stream = self._call_capture.acquire()
+            stream = self._call_capture.acquire(input_uid)
             if stream is not None:
                 try:
                     stream.start()
@@ -120,25 +130,39 @@ class Recorder:
                     stream.stop()
                     stream.close()
                     raise
-        last_error = None
-        for sample_rate in (SAMPLE_RATE, None):
-            stream = None
+        try:
+            environment = input_devices.AudioEnvironment()
             try:
-                logger.info("Opening microphone requested_rate=%s", sample_rate)
-                stream = self._make_stream(sample_rate)
-                logger.info(
-                    "Microphone opened device=%s rate=%s latency=%s; starting stream",
-                    stream.device, stream.samplerate, stream.latency,
-                )
-                stream.start()
-                logger.info("Microphone stream started active=%s", stream.active)
-                actual_rate = int(stream.samplerate or sample_rate or SAMPLE_RATE)
-                return stream, actual_rate
-            except Exception as e:
-                last_error = e
-                logger.exception("Microphone startup failed requested_rate=%s", sample_rate)
-                self._close_stream(stream, abort=True)
-        raise last_error
+                selected = environment.resolve_input(input_uid)
+            finally:
+                environment.close()
+            input_devices.refresh_portaudio()
+            logger.info("Selected microphone name=%s coreaudio_id=%s follows_default=%s",
+                        selected["name"], selected["id"], input_uid is None)
+            last_error = RuntimeError("Selected microphone could not be opened. Reconnect it and try again.")
+            for device in input_devices.candidate_indices(selected):
+                for sample_rate in (SAMPLE_RATE, None):
+                    stream = None
+                    try:
+                        stream = self._make_stream(sample_rate, device=device)
+                        actual_device = input_devices.stream_device_id(stream)
+                        if actual_device != selected["id"]:
+                            self._close_stream(stream, abort=True)
+                            break  # Same name, different hardware. Never start it.
+                        logger.info("Microphone opened device=%s coreaudio_id=%s rate=%s latency=%s",
+                                    stream.device, actual_device, stream.samplerate, stream.latency)
+                        stream.start()
+                        logger.info("Microphone stream started active=%s", stream.active)
+                        return stream, int(stream.samplerate or sample_rate or SAMPLE_RATE)
+                    except Exception as e:
+                        last_error = e
+                        logger.exception("Microphone startup failed requested_rate=%s", sample_rate)
+                        self._close_stream(stream, abort=True)
+            raise last_error
+        except Exception:
+            if self._call_capture is not None and self._blocked_stream is None:
+                self._call_capture.release()
+            raise
 
     def _reset_backend(self):
         terminate = getattr(sd, "_terminate", None)
@@ -168,6 +192,8 @@ class Recorder:
             old_stream = self.stream
             self.stream = None
         self._close_stream(old_stream, abort=True)
+        if old_stream is not None and self._call_capture is not None:
+            self._call_capture.release()
 
         with self.lock:
             self.chunks = []
@@ -199,6 +225,8 @@ class Recorder:
             return None, "no_stream"
 
         close_errors = self._close_stream(stream)
+        if self._call_capture is not None:
+            self._call_capture.release()
         logger.info("Microphone closed errors=%s", close_errors)
         with self.lock:
             if not self.chunks:

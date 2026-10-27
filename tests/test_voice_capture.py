@@ -74,6 +74,45 @@ class CallCaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "native startup failed"):
             capture.acquire()
 
+    def test_selected_mic_controls_call_detection_even_when_default_is_different(self):
+        capture, env, factory = self.manager(state(3, (10,)))
+        capture.select_input("built-in-uid")
+        self.assertIs(capture.acquire(), factory.return_value)
+        env.snapshot.assert_called_with("built-in-uid")
+        self.assertEqual(factory.call_args.args[1], 78)
+
+    def test_changing_selection_defers_disposal_until_recording_finishes(self):
+        capture, env, factory = self.manager(state(3, (10,)))
+        stream = capture.acquire()
+        capture.select_input("phone-uid")
+        env.snapshot.return_value = state(1, (), builtin=False, device=90)
+        capture._refresh()
+        stream.dispose.assert_not_called()
+        capture.release()
+        self.assertIsNone(capture.acquire())
+        stream.dispose.assert_called_once()
+        env.snapshot.assert_called_with("phone-uid")
+
+    def test_raw_capture_defers_preparing_a_different_mic_until_released(self):
+        capture, env, factory = self.manager(state())
+        self.assertIsNone(capture.acquire())
+        capture.select_input("built-in-uid")
+        env.snapshot.return_value = state(3, (10,))
+        capture._refresh()
+        factory.assert_not_called()
+        capture.release()
+        self.assertIs(capture.acquire(), factory.return_value)
+
+    def test_disconnected_selection_releases_prepared_mic_and_keeps_notifications(self):
+        capture, env, factory = self.manager(state(3, (10,)))
+        capture._refresh()
+        env.snapshot.side_effect = RuntimeError("Selected microphone unavailable")
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            capture.acquire()
+        factory.return_value.dispose.assert_called_once()
+        self.assertIsNone(capture.stream)
+        env.subscribe.assert_called_with(None)
+
     def test_float_samples_are_copied_and_clipped_before_callback_returns(self):
         import ctypes as C
         import numpy as np

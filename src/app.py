@@ -70,7 +70,7 @@ class SpeakrFlowApp(rumps.App):
         self.cfg = config.load()
         logger.info("Configuration provider=%s model=%s hotkey=%s env=%s",
                     self.cfg["provider"], self.cfg["model"], self.cfg["hotkey"], ENV_FILE)
-        self.recorder = Recorder()
+        self.recorder = Recorder(self.cfg["input_device_uid"])
         self.recorder.prepare_call_capture()
         self.hotkey = None
         self.busy = False
@@ -235,8 +235,11 @@ class SpeakrFlowApp(rumps.App):
         show_microphone_modes()
 
     def _on_settings_saved(self, new_cfg):
+        old_hotkey = self.cfg["hotkey"]
         self.cfg = config.normalize(new_cfg)
-        self._start_hotkey()
+        self.recorder.select_input(self.cfg["input_device_uid"])
+        if self.cfg["hotkey"] != old_hotkey:
+            self._start_hotkey()
         self._rebuild_menu()
 
     # ---------- recording ----------
