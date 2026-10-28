@@ -110,8 +110,10 @@ class SpeakrFlowApp(rumps.App):
             logger.warning("Could not disable App Nap: %s", e)
 
     def _on_wake(self):
-        # The old event tap may have been disabled during sleep; a fresh
-        # listener is cheap and guaranteed to work.
+        # Dark wakes fire this every ~30s overnight, so re-enable the existing
+        # tap rather than building a new listener each time.
+        if self.hotkey and self.hotkey.ensure_enabled():
+            return
         logger.info("System woke from sleep; restarting hotkey listener")
         self._start_hotkey()
 
@@ -259,7 +261,7 @@ class SpeakrFlowApp(rumps.App):
             if self.recording:
                 return
             hotkey = self.hotkey
-        if not hotkey or not hotkey.is_alive():
+        if not hotkey or not hotkey.ensure_enabled():
             logger.warning("Hotkey listener stopped; restarting")
             self._start_hotkey()
 

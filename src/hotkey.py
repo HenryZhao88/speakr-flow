@@ -32,6 +32,10 @@ class ResilientListener(keyboard.Listener):
     so its listener thread stays alive but never receives another keystroke —
     which also means thread-liveness watchdogs can't detect the failure.
     Re-enabling the tap when the notification arrives keeps the hotkey working.
+
+    pynput also never invalidates its tap when the listener stops, so every
+    discarded listener left a dead tap registered with WindowServer, which
+    still routes all input through it. We invalidate the tap on the way out.
     """
 
     _DISABLED_EVENTS = (
@@ -42,6 +46,29 @@ class ResilientListener(keyboard.Listener):
     def _create_event_tap(self):
         self._tap = super()._create_event_tap()
         return self._tap
+
+    def _run(self):
+        try:
+            super()._run()
+        finally:
+            self._release_tap()
+
+    def _release_tap(self):
+        tap, self._tap = getattr(self, "_tap", None), None
+        if tap is not None:
+            Quartz.CGEventTapEnable(tap, False)
+            Quartz.CFMachPortInvalidate(tap)
+
+    def ensure_enabled(self):
+        """Re-enable the tap if macOS turned it off. Returns False if there is
+        no live tap, in which case the caller should start a new listener."""
+        tap = getattr(self, "_tap", None)
+        if tap is None or not self.is_alive():
+            return False
+        if not Quartz.CGEventTapIsEnabled(tap):
+            Quartz.CGEventTapEnable(tap, True)
+            logger.warning("Event tap was found disabled; re-enabled")
+        return True
 
     def _handle_message(self, proxy, event_type, event, refcon, injected):
         if event_type in self._DISABLED_EVENTS:
@@ -102,3 +129,6 @@ class HoldHotkey:
 
     def is_alive(self):
         return bool(self.listener and self.listener.is_alive())
+
+    def ensure_enabled(self):
+        return bool(self.listener and self.listener.ensure_enabled())

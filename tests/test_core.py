@@ -184,6 +184,33 @@ class HotkeyResilienceTests(unittest.TestCase):
         base_handler.assert_called_once_with(None, 10, "event", None, False)
 
 
+    def test_tap_is_invalidated_when_listener_exits(self):
+        """A tap that is never invalidated stays registered with WindowServer,
+        which keeps routing every input event through it."""
+        hotkey, listener = self._make_listener()
+        tap = listener._tap
+        with mock.patch.object(hotkey.keyboard.Listener, "_run"), \
+                mock.patch.object(hotkey.Quartz, "CGEventTapEnable") as enable, \
+                mock.patch.object(hotkey.Quartz, "CFMachPortInvalidate") as invalidate:
+            listener._run()
+        enable.assert_called_once_with(tap, False)
+        invalidate.assert_called_once_with(tap)
+        self.assertIsNone(listener._tap)
+
+    def test_ensure_enabled_reenables_a_disabled_tap(self):
+        hotkey, listener = self._make_listener()
+        with mock.patch.object(listener, "is_alive", return_value=True), \
+                mock.patch.object(hotkey.Quartz, "CGEventTapIsEnabled", return_value=False), \
+                mock.patch.object(hotkey.Quartz, "CGEventTapEnable") as enable:
+            self.assertTrue(listener.ensure_enabled())
+        enable.assert_called_once_with(listener._tap, True)
+
+    def test_ensure_enabled_reports_a_dead_listener(self):
+        hotkey, listener = self._make_listener()
+        with mock.patch.object(listener, "is_alive", return_value=False):
+            self.assertFalse(listener.ensure_enabled())
+
+
 class PasteTests(unittest.TestCase):
     """CGEventPost silently discards events without Accessibility permission;
     paste_text must fail loudly instead so the app can notify the user."""
