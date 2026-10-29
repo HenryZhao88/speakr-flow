@@ -15,7 +15,7 @@ from Foundation import (
 )
 from PyObjCTools import AppHelper
 
-from . import config, history, paste, settings_window, status
+from . import archive, config, history, paste, settings_window, status, transcript_search
 from .diagnostics import logger
 from .paths import ENV_FILE
 from .recorder import Recorder
@@ -176,6 +176,7 @@ class SpeakrFlowApp(rumps.App):
         self.menu.add(rumps.MenuItem("Clear History", callback=self.clear_history))
         self.menu.add(rumps.MenuItem("Reload .env", callback=self.reload_env))
         self.menu.add(rumps.separator)
+        self.menu.add(rumps.MenuItem("Search Transcripts…", callback=self.open_search))
         self.menu.add(rumps.MenuItem("Settings…", callback=self.open_settings))
         self.menu.add(rumps.MenuItem("Call Microphone Mode…", callback=self.open_microphone_mode))
         self.menu.add(rumps.MenuItem("Quit SpeakrFlow", callback=rumps.quit_application))
@@ -231,6 +232,9 @@ class SpeakrFlowApp(rumps.App):
             on_save=self._on_settings_saved,
             on_history_change=self._rebuild_menu,
         )
+
+    def open_search(self, _):
+        transcript_search.open_search()
 
     def open_microphone_mode(self, _):
         from .voice_capture import show_microphone_modes
@@ -293,6 +297,7 @@ class SpeakrFlowApp(rumps.App):
         def worker():
             ok = False
             detail = ""
+            archive_number = None
             try:
                 wav, skip_reason = self.recorder.stop()
                 if wav is None:
@@ -307,6 +312,12 @@ class SpeakrFlowApp(rumps.App):
                         f.write(wav.getvalue())
                 except Exception as e:
                     logger.warning("Failed to save recording copy: %s", e)
+
+                try:
+                    archive_number = archive.save_recording(wav.getvalue())
+                    logger.info("Archived recording #%d", archive_number)
+                except Exception as e:
+                    logger.warning("Failed to archive recording: %s", e)
 
                 self._set_state_later("transcribing")
                 text = transcribe(
@@ -324,6 +335,10 @@ class SpeakrFlowApp(rumps.App):
                 logger.info("Transcription succeeded: %d characters", len(text))
                 detail = text
                 history.add(text, limit=cfg["history_limit"])
+                try:
+                    archive.save_transcript(text, archive_number)
+                except Exception as e:
+                    logger.warning("Failed to archive transcript: %s", e)
                 # NSMenu changes from a background thread don't flush reliably.
                 # Bounce the rebuild onto the main run loop so Cocoa sees it.
                 AppHelper.callAfter(self._rebuild_menu)
@@ -354,6 +369,8 @@ class SpeakrFlowApp(rumps.App):
                 with self._state_lock:
                     self.busy = False
                 AppHelper.callAfter(self._finish_attempt, ok, detail)
+                if archive_number is not None:
+                    AppHelper.callAfter(transcript_search.refresh_if_open)
 
         threading.Thread(target=worker, daemon=True).start()
 

@@ -11,6 +11,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # User wants temporary recordings saved here for visibility
 RECORDING_FILE = Path.home() / "Downloads" / "!speakrflow-recording.wav"
 
+# Every recording and transcript is kept here as 1.wav/1.txt, 2.wav/2.txt, …
+ARCHIVE_DIR = Path.home() / ".speakrflow"
+
 CONFIG_FILE = DATA_DIR / "config.json"
 HISTORY_FILE = DATA_DIR / "history.json"
 

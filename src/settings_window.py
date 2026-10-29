@@ -20,7 +20,7 @@ from AppKit import (
     NSFloatingWindowLevel,
 )
 
-from . import config, history, hotkey
+from . import config, history, hotkey, transcript_search
 from .input_devices import available_inputs
 from .diagnostics import logger
 from .paths import ENV_FILE
@@ -208,6 +208,9 @@ class SettingsController(NSObject):
         cv.addSubview_(self._button(
             "Reload .env", 160, 56, action="reloadEnv:",
         ))
+        cv.addSubview_(self._button(
+            "Search Transcripts…", 296, 56, action="searchTranscripts:", w=170,
+        ))
 
         # Bottom row: Cancel / Save
         cv.addSubview_(self._button("Cancel", W - 270, 18, action="cancel:"))
@@ -374,6 +377,9 @@ class SettingsController(NSObject):
         history.delete(sender.tag())
         self._populate_history()
         self._notify_history_changed()
+
+    def searchTranscripts_(self, sender):
+        transcript_search.open_search()
 
     def reloadEnv_(self, sender):
         from dotenv import load_dotenv

@@ -60,6 +60,7 @@ Click the 🎙 icon for:
 - **Status** line (Idle / Recording… / Finishing recording… / Transcribing…) and the result of the last attempt (✓/⚠ with time and details)
 - Recent transcriptions (click any to copy)
 - Clear history
+- **Search Transcripts…** — search everything you've ever dictated (also in Settings)
 - **Open Settings…** — provider, model, hotkey, language, prompt, auto-paste, etc.
 - Reload `.env`
 - Quit
@@ -86,11 +87,24 @@ Default: **Groq** with `whisper-large-v3-turbo`. Sign up at https://console.groq
 
 Alt: **OpenAI** with `whisper-1`. Switch in Settings.
 
+## Searching transcripts
+
+**Search Transcripts…** (menu bar, or the button in Settings) searches every
+transcript in `~/.speakrflow`. Results are grouped by recording, with one row per
+place the phrase was said. Pick a row to see the full transcript with every
+match highlighted. **Play** replays the audio, and **Show in Finder** reveals the
+file. With the search box empty, the window lists all recordings, newest first.
+Press ↓ or Return in the search box to jump into the results.
+
 ## Config + data
 
 User data is stored in `~/Library/Application Support/SpeakrFlow/`:
 - `config.json` — settings
 - `history.json` — transcription history
+
+Every recording is also archived in `~/.speakrflow/`, numbered in order:
+`1.wav` with its transcript in `1.txt`, then `2.wav`/`2.txt`, and so on. If a
+transcription fails, its `.wav` is kept without a `.txt`.
 
 API keys live in `.env` (gitignored).
 
